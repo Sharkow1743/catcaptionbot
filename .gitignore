@@ -1,0 +1,8 @@
+/target
+.env
+test_bot/
+helper_scripts/venv/
+.fastembed_cache/
+robert-tiny2/
+*.db
+*sqlite
