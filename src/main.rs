@@ -1,17 +1,19 @@
 mod commands;
+mod content;
 mod controls;
 mod macros;
 mod state;
-mod text_generation;
+mod text;
 
 use std::time::Duration;
 
 use commands::{Command, handle_help, handle_start};
+use content::rarity::{Common, RarityManager};
 use controls::handle_keyboard_callback;
 use controls::kb_command::UpdateKbExt;
 use state::State;
-use text_generation::morph::SqlMorpher;
-use text_generation::random::RandomWordDb;
+use text::WordGenerator;
+use text::{Morpher, TextComposer};
 
 use libsqlite3_sys::sqlite3_auto_extension;
 use reqwest::Client;
@@ -42,8 +44,11 @@ async fn main() -> anyhow::Result<()> {
 
     let bot = Bot::from_env_with_client(client);
 
-    let morpher = SqlMorpher::new("morphology.db").await?;
-    let word_generator = RandomWordDb::new("words.db").await?;
+    let morpher = Morpher::new("morphology.db").await?;
+    let word_generator = WordGenerator::new("words.db").await?;
+    let composer = TextComposer::new(morpher, word_generator);
+
+    let rarity_manager = RarityManager::new().extend(vec![Common]);
 
     let handler = dialogue::enter::<Update, InMemStorage<State>, State, _>()
         .branch(
@@ -55,7 +60,11 @@ async fn main() -> anyhow::Result<()> {
         .branch(Update::filter_kb_callback().endpoint(handle_keyboard_callback));
 
     Dispatcher::builder(bot, handler)
-        .dependencies(deps![InMemStorage::<State>::new(), morpher, word_generator])
+        .dependencies(deps![
+            InMemStorage::<State>::new(),
+            composer,
+            rarity_manager
+        ])
         .enable_ctrlc_handler()
         .build()
         .dispatch()

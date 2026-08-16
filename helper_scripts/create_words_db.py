@@ -68,16 +68,10 @@ def get_rank_weight(rank_index: int) -> float:
     diff_main = log_rank - log_peak_main
     main_curve = math.exp(-(diff_main**2) / (2 * (sigma_main**2)))
 
-    log_peak_bump = math.log(10738)
-    sigma_bump = 0.35
-    diff_bump = log_rank - log_peak_bump
-    bump_curve = math.exp(-(diff_bump**2) / (2 * (sigma_bump**2)))
-
     base_weight = 0.15
     main_amplitude = 1.15
-    bump_amplitude = 0.25
 
-    return base_weight + (main_amplitude * main_curve) + (bump_amplitude * bump_curve)
+    return base_weight + (main_amplitude * main_curve)
 
 
 def get_len_weight(length: int) -> float:
@@ -95,7 +89,7 @@ def get_len_weight(length: int) -> float:
 
 def get_custom_weight(word: str) -> float | None:
     if word in ["се", "кот", "сборка", "обновить"]:
-        return 2.2
+        return 2.3
     return None
 
 
