@@ -9,8 +9,10 @@ use std::time::Duration;
 
 use commands::{Command, handle_help, handle_start};
 use content::rarity::{Common, RarityManager};
+use content::spawn_queue;
 use controls::handle_keyboard_callback;
 use controls::kb_command::UpdateKbExt;
+use flume::Receiver;
 use state::State;
 use text::WordGenerator;
 use text::{Morpher, TextComposer};
@@ -24,6 +26,13 @@ use teloxide::{
     prelude::*,
 };
 
+#[derive(Clone)]
+struct AppState {
+    pub rarity_manager: RarityManager,
+    pub composer: TextComposer,
+    pub client: Client,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     pretty_env_logger::init();
@@ -35,20 +44,30 @@ async fn main() -> anyhow::Result<()> {
 
     dotenvy::dotenv().ok();
 
-    let client = Client::builder()
-        .timeout(Duration::from_secs(30))
-        .connect_timeout(Duration::from_secs(15))
-        .pool_max_idle_per_host(0) // Disable connection reuse
-        .build()
-        .expect("Failed to build client");
+    let proxy_url =
+        std::env::var("TELOXIDE_PROXY").unwrap_or_else(|_| "socks5h://127.0.0.1:8086".to_string());
 
-    let bot = Bot::from_env_with_client(client);
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(&proxy_url)?)
+        .connect_timeout(Duration::from_secs(30))
+        .pool_max_idle_per_host(usize::MAX)
+        .build()?;
+
+    let bot = Bot::from_env_with_client(client.clone());
 
     let morpher = Morpher::new("morphology.db").await?;
     let word_generator = WordGenerator::new("words.db").await?;
     let composer = TextComposer::new(morpher, word_generator);
 
     let rarity_manager = RarityManager::new().extend(vec![Common]);
+
+    let app_state = AppState {
+        rarity_manager,
+        composer,
+        client,
+    };
+
+    let content_queue = spawn_queue(app_state.clone(), 32, 1, 16);
 
     let handler = dialogue::enter::<Update, InMemStorage<State>, State, _>()
         .branch(
@@ -62,8 +81,8 @@ async fn main() -> anyhow::Result<()> {
     Dispatcher::builder(bot, handler)
         .dependencies(deps![
             InMemStorage::<State>::new(),
-            composer,
-            rarity_manager
+            app_state,
+            content_queue
         ])
         .enable_ctrlc_handler()
         .build()

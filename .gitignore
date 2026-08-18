@@ -7,3 +7,4 @@ robert-tiny2/
 *.db
 *sqlite
 *.ttf
+.image_cache/

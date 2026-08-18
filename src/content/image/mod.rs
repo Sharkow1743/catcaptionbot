@@ -1,18 +1,22 @@
-mod edit;
+pub mod edit;
 
 use std::path::Path;
 
 use bytes::Bytes;
 use rand::rng;
 use rand::seq::IndexedRandom;
+use reqwest::Client;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tokio::fs;
+use tokio::{fs, spawn};
 
-pub async fn fetch_image() -> anyhow::Result<Bytes> {
+pub async fn fetch_image(client: &Client) -> anyhow::Result<Bytes> {
     // Try fetching from API; on ANY failure, fall back to cache
-    let bytes = match fetch_from_api().await {
-        Ok(b) => b,
+    let bytes = match fetch_from_api(client).await {
+        Ok(b) => {
+            log::debug!("Fetched image from API ({} bytes)", b.len());
+            b
+        }
         Err(e) => {
             log::warn!("API fetch failed ({e}), falling back to cached image");
             return load_random_cached().await;
@@ -20,25 +24,37 @@ pub async fn fetch_image() -> anyhow::Result<Bytes> {
     };
 
     // Cache the successfully fetched image (non-fatal if this fails)
-    cache_bytes(&bytes).await;
+    spawn(cache_bytes(bytes.clone()));
 
     Ok(bytes)
 }
 
-async fn fetch_from_api() -> anyhow::Result<Bytes> {
-    let resp = reqwest::get("https://api.thecatapi.com/v1/images/search")
+async fn fetch_from_api(client: &Client) -> anyhow::Result<Bytes> {
+    let t1 = std::time::Instant::now();
+    let resp = client
+        .get("https://api.thecatapi.com/v1/images/search")
+        .send()
         .await?
         .json::<Value>()
         .await?;
+    log::debug!("catapi metadata request took {:?}", t1.elapsed());
 
     let url = resp[0]["url"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Cannot parse url from the api"))?;
 
-    Ok(reqwest::get(url).await?.bytes().await?)
+    let t2 = std::time::Instant::now();
+    let bytes = client.get(url).send().await?.bytes().await?;
+    log::debug!(
+        "image download request took {:?} ({} bytes)",
+        t2.elapsed(),
+        bytes.len()
+    );
+
+    Ok(bytes)
 }
 
-async fn cache_bytes(bytes: &Bytes) {
+async fn cache_bytes(bytes: Bytes) {
     let cache_dir = Path::new("./.image_cache");
     if let Err(e) = fs::create_dir_all(cache_dir).await {
         log::warn!("Cannot create image cache dir: {e}");
@@ -46,16 +62,19 @@ async fn cache_bytes(bytes: &Bytes) {
     }
 
     let mut hasher = Sha256::new();
-    hasher.update(bytes);
+    hasher.update(&bytes);
     let hash = hex::encode(hasher.finalize());
 
     let filename = format!("{}.{}", &hash[..16], "jpg");
     let filepath = cache_dir.join(filename);
 
     if !filepath.exists() {
-        if let Err(e) = fs::write(&filepath, bytes).await {
-            log::warn!("Cannot write image to cache: {e}");
+        match fs::write(&filepath, bytes).await {
+            Ok(()) => log::trace!("Cached image to {}", filepath.display()),
+            Err(e) => log::warn!("Cannot write image to cache: {e}"),
         }
+    } else {
+        log::trace!("Image already cached at {}", filepath.display());
     }
 }
 
@@ -69,6 +88,10 @@ async fn load_random_cached() -> anyhow::Result<Bytes> {
         if path.is_file() {
             files.push(path);
         }
+    }
+
+    if files.is_empty() {
+        log::error!("Fallback image cache is empty, no image can be served");
     }
 
     let chosen = files

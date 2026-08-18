@@ -2,10 +2,15 @@ pub mod kb_command;
 
 use std::vec;
 
+use flume::Receiver;
 use kb_command::KbCommand;
+use reqwest::Client;
 use teloxide::prelude::*;
 use teloxide::types::{KeyboardButton, KeyboardMarkup, Message};
 
+use crate::AppState;
+use crate::content::Content;
+use crate::content::rarity::RarityManager;
 use crate::text::WordSpec;
 
 use super::reply_kb;
@@ -35,10 +40,27 @@ pub async fn handle_keyboard_callback(
     bot: Bot,
     dialogue: DialogueState,
     cmd: KbCommand,
-    composer: TextComposer,
+    content_queue: Receiver<Content>,
 ) -> HandlerResult {
     match cmd {
-        KbCommand::Get => {}
+        KbCommand::Get => {
+            let mut content = content_queue.recv_async().await?;
+
+            let image = content.image();
+
+            let img_id = if let Some(photo_meta) = bot
+                .send_photo(msg.chat.id, image.clone().into())
+                .await?
+                .photo()
+                && let Some(photo_meta) = photo_meta.get(0)
+            {
+                Ok(photo_meta.clone().file.id)
+            } else {
+                Err(anyhow::anyhow!("Cannot get photo id"))
+            }?;
+
+            image.set_file_id(img_id);
+        }
     }
 
     Ok(())

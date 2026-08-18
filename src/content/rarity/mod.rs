@@ -1,5 +1,7 @@
 mod rarities;
 
+use std::sync::Arc;
+
 use crate::text::{Pos, WordSpec};
 use rand::distr::weighted::WeightedIndex;
 use rand::prelude::*;
@@ -8,7 +10,7 @@ pub use rarities::*;
 use skia_rs_core::Color;
 use skia_rs_paint::ImageFilterRef;
 
-pub trait Rarity {
+pub trait Rarity: Send + Sync {
     fn name(&self) -> String;
     fn is_secret(&self) -> bool {
         false
@@ -36,8 +38,9 @@ pub trait Rarity {
     }
 }
 
+#[derive(Clone)]
 pub struct RarityManager {
-    rarities: Vec<Box<dyn Rarity>>,
+    rarities: Vec<Arc<dyn Rarity>>,
 }
 
 impl RarityManager {
@@ -47,12 +50,11 @@ impl RarityManager {
         }
     }
 
-    // Accept any type that implements Rarity
     pub fn add_rarity(&mut self, rarity: impl Rarity + 'static) {
-        self.rarities.push(Box::new(rarity));
+        self.rarities.push(Arc::new(rarity));
     }
 
-    pub fn extend<T>(&mut self, rarities: T)
+    pub fn extend<T>(mut self, rarities: T) -> Self
     where
         T: IntoIterator,
         T::Item: Rarity + 'static,
@@ -60,11 +62,13 @@ impl RarityManager {
         for r in rarities {
             self.add_rarity(r);
         }
+
+        self
     }
 
-    pub fn pick(&self) -> Option<&dyn Rarity> {
+    pub fn pick(&self) -> Option<Arc<dyn Rarity>> {
         let weights: Vec<f32> = self.rarities.iter().map(|i| i.weight()).collect();
         let dist = WeightedIndex::new(weights).ok()?;
-        Some(self.rarities[dist.sample(&mut rand::rng())].as_ref())
+        Some(self.rarities[dist.sample(&mut rand::rng())].clone())
     }
 }

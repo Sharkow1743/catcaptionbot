@@ -125,8 +125,25 @@ impl WordGenerator {
             return Ok(vec![]);
         }
 
-        let candidates = self.fetch_candidates(poses_slice, false, &[]).await?;
-        Ok(weighted_sample_without_replacement(&candidates, count))
+        let mut builder: QueryBuilder<Sqlite> = QueryBuilder::new("SELECT word FROM words ");
+
+        if !poses_slice.is_empty() {
+            builder.push("WHERE pos IN (");
+            let mut separated = builder.separated(", ");
+            for pos in poses_slice {
+                separated.push_bind(pos.as_str());
+            }
+            separated.push_unseparated(") ");
+        }
+
+        // Weighted-ish via ORDER BY RANDOM() weighted by a repeat trick is awkward in pure
+        // SQL; if strict weighting matters, keep the old path. If approximate weighting is
+        // fine (e.g. weight just nudges common words), this is far cheaper:
+        builder.push("ORDER BY RANDOM() * MAX(weight, 0.0001) DESC LIMIT ");
+        builder.push_bind(count as i64);
+
+        let rows: Vec<(String,)> = builder.build_query_as().fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(|(w,)| w).collect())
     }
 
     /// Get N random words close in meaning to target vector

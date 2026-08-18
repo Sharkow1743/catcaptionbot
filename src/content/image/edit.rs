@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 
 use crate::content::types::CachedImage;
 
@@ -14,10 +15,49 @@ use skia_rs_text::{Font, TextBlobBuilder, Typeface};
 const IMPACT_TTF: &[u8] = include_bytes!("../../../impact.ttf");
 const ARIAL_TTF: &[u8] = include_bytes!("../../../arial.ttf");
 
-fn process_image(rarity: &dyn Rarity, image: Bytes, text: String) -> anyhow::Result<CachedImage> {
+/// The Impact typeface is immutable and identical across every request, but
+/// `Typeface::from_data` re-parses the font bytes (and re-runs font shaping
+/// setup) every time it's called. Parse it once and hand out cheap `Arc`
+/// clones from then on.
+static IMPACT_TYPEFACE: OnceLock<Arc<Typeface>> = OnceLock::new();
+
+fn impact_typeface() -> anyhow::Result<Arc<Typeface>> {
+    if let Some(tf) = IMPACT_TYPEFACE.get() {
+        return Ok(tf.clone());
+    }
+
+    log::debug!("Parsing Impact typeface (first use, will be cached)");
+    let tf = Arc::new(
+        Typeface::from_data(IMPACT_TTF.to_vec())
+            .ok_or_else(|| anyhow::anyhow!("Cannot initialize font"))?,
+    );
+
+    // If another thread raced us and initialized it first, use theirs and
+    // drop ours, so there's always exactly one cached instance.
+    Ok(IMPACT_TYPEFACE.get_or_init(|| tf).clone())
+}
+
+pub fn process_image(
+    rarity: &dyn Rarity,
+    image: Bytes,
+    text: String,
+) -> anyhow::Result<CachedImage> {
+    let start = Instant::now();
+
     let image = decode_image(&image)?;
+    let (w, h) = image.dimensions();
+    let scaling = 800 - w;
+    log::trace!("Scaling image {w}x{h} -> {}x{}", w + scaling, h + scaling);
+    let image = image
+        .make_scaled_with(
+            w + scaling,
+            h + scaling,
+            skia_rs_codec::SamplingOptions::Linear,
+        )
+        .ok_or_else(|| anyhow::anyhow!("Cannot scale image"))?;
 
     let image = if let Some(filter) = rarity.filter() {
+        log::trace!("Applying filter for rarity {}", rarity.name());
         image
             .make_with_filter(filter.as_ref())
             .ok_or_else(|| anyhow::anyhow!("Cannot apply filter"))?
@@ -31,12 +71,27 @@ fn process_image(rarity: &dyn Rarity, image: Bytes, text: String) -> anyhow::Res
     let mut canvas = surface.canvas();
     canvas.draw_image(&image, 0.0, 0.0, None);
 
+    let typeface = impact_typeface()?;
+    canvas = bake_caption(canvas, &text, typeface)?;
+
     let baked = surface
         .make_image_snapshot()
         .ok_or_else(|| anyhow::anyhow!("Cannot create snapshot"))?;
 
+    let encode_start = Instant::now();
     let mut out: Vec<u8> = Vec::new();
     JpegEncoder::default().encode(&baked, &mut out)?;
+    log::trace!(
+        "JPEG encode took {:?} ({} bytes)",
+        encode_start.elapsed(),
+        out.len()
+    );
+
+    log::debug!(
+        "process_image total: {:?} (rarity={})",
+        start.elapsed(),
+        rarity.name()
+    );
 
     Ok(CachedImage::from_bytes(out))
 }
@@ -44,10 +99,8 @@ fn process_image(rarity: &dyn Rarity, image: Bytes, text: String) -> anyhow::Res
 pub fn bake_caption<'a>(
     mut canvas: Canvas<'a>,
     text: &str,
-    typeface: Typeface,
+    typeface: Arc<Typeface>,
 ) -> anyhow::Result<Canvas<'a>> {
-    let typeface: Arc<Typeface> = Arc::new(typeface);
-
     let w_f = canvas.width() as f32;
     let h_f = canvas.height() as f32;
 
@@ -64,6 +117,11 @@ pub fn bake_caption<'a>(
         max_block_height,
         96.0,
         12.0,
+    );
+    log::debug!(
+        "Caption fit: font_size={font_size}, lines={}, chars={}",
+        lines.len(),
+        text.len()
     );
 
     // --- draw ---
@@ -99,6 +157,12 @@ pub fn bake_caption<'a>(
 
 /// Try decreasing font sizes until the wrapped text fits both
 /// `max_width` per line and `max_height` total. Returns (font_size, lines).
+///
+/// Rather than always linear-stepping from `start_size` down to a fit (which
+/// can take many measure/wrap passes for long captions), we measure once at
+/// `start_size`, estimate how much smaller the font needs to be from the
+/// overflow ratio, jump straight there, and only linear-step a couple of
+/// times afterward to correct for wrapping's non-linearity.
 fn fit_text(
     text: &str,
     typeface: &Arc<Typeface>,
@@ -107,7 +171,15 @@ fn fit_text(
     start_size: f32,
     min_size: f32,
 ) -> (f32, Vec<String>) {
-    let mut size = start_size;
+    // Measure once at start_size on the whole (unwrapped) text to estimate scale.
+    let probe_font = Font::new(typeface.clone(), start_size);
+    let probe_width = probe_font.measure_text(text).max(1.0);
+
+    // Estimate a starting size assuming width scales ~linearly with font size,
+    // then clamp into range. This skips most of the step-down iterations.
+    let estimated = (start_size * (max_width / probe_width)).clamp(min_size, start_size);
+
+    let mut size = estimated;
     loop {
         let font = Font::new(typeface.clone(), size);
         let lines = word_wrap(text, &font, max_width);
@@ -117,7 +189,8 @@ fn fit_text(
         if total_height <= max_height || size <= min_size {
             return (size, lines);
         }
-        size -= 2.0; // step down and retry
+        // Still too big after the estimate — smaller step now since we're close.
+        size = (size - 4.0).max(min_size);
     }
 }
 

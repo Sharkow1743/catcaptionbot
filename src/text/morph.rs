@@ -1,4 +1,5 @@
 use super::types::{Case, Gender, Number, Pos, WordAnalysis};
+use futures::future::join_all;
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::collections::HashSet;
 
@@ -301,7 +302,7 @@ impl Morpher {
 
         let row: Option<(String,)> = sqlx::query_as(
             "SELECT word FROM dictionary
-             WHERE (word LIKE '%ние' OR word LIKE '%тие')
+             WHERE (word_rev LIKE 'еин%' OR word LIKE 'еит%')
              AND word LIKE ? LIMIT 1",
         )
         .bind(format!("{}%", &w[..prefix_len]))
@@ -390,20 +391,23 @@ impl Morpher {
             return String::new();
         }
 
-        let mut tokens: Vec<TokenParse> = Vec::with_capacity(raw_words.len());
-        for word in &raw_words {
-            let analysis = self.analyze_word(word).await;
-            let grammemes = Self::tag_to_grammemes(&analysis.tag);
-            tokens.push(TokenParse {
-                original: word.clone(),
-                lemma: analysis.lemma,
-                pos: analysis.pos,
-                raw_tag: analysis.tag,
-                grammemes,
-                governed_case: None,
-                is_predicate_adj: false,
-            });
-        }
+        let analyses = join_all(raw_words.iter().map(|w| self.analyze_word(w))).await;
+        let mut tokens: Vec<TokenParse> = raw_words
+            .iter()
+            .zip(analyses)
+            .map(|(word, analysis)| {
+                let grammemes = Self::tag_to_grammemes(&analysis.tag);
+                TokenParse {
+                    original: word.clone(),
+                    lemma: analysis.lemma,
+                    pos: analysis.pos,
+                    raw_tag: analysis.tag,
+                    grammemes,
+                    governed_case: None,
+                    is_predicate_adj: false,
+                }
+            })
+            .collect();
 
         // 1. Pass 1: Preposition Governance
         for i in 0..tokens.len() {
@@ -534,24 +538,25 @@ impl Morpher {
             }
         }
 
-        // 4. Pass 4: Final Inflection Generation
-        let mut output_words = Vec::with_capacity(tokens.len());
+        // Pass 4a: decide the job for every token — pure, no awaits, so this is just a
+        // straightforward sequential loop building index-ordered jobs.
+        let mut jobs: Vec<InflectionJob> = Vec::with_capacity(tokens.len());
 
         for i in 0..tokens.len() {
             let tok = &tokens[i];
 
             if tok.is_predicate_adj {
-                let inflected = self
-                    .derive_short_adj(&tok.original, subject_gender, subject_number)
-                    .await;
-                output_words.push(inflected);
+                jobs.push(InflectionJob::ShortAdj {
+                    word: tok.original.clone(),
+                    gender: subject_gender,
+                    number: subject_number,
+                });
                 continue;
             }
 
-            match tok.pos {
+            let job = match tok.pos {
                 Pos::Adj | Pos::Prt => {
                     let mut target_noun = None;
-
                     for j in (i + 1)..tokens.len() {
                         if tokens[j].pos == Pos::Noun || tokens[j].pos == Pos::Npro {
                             target_noun = Some(&tokens[j]);
@@ -560,7 +565,6 @@ impl Morpher {
                             break;
                         }
                     }
-
                     if target_noun.is_none() && i > 0 {
                         for j in (0..i).rev() {
                             if tokens[j].pos == Pos::Noun || tokens[j].pos == Pos::Npro {
@@ -571,37 +575,39 @@ impl Morpher {
                     }
 
                     if let Some(noun) = target_noun {
-                        let mut adj_gender = "masc";
-                        if noun.grammemes.contains("femn") {
-                            adj_gender = "femn";
+                        let adj_gender = if noun.grammemes.contains("femn") {
+                            "femn"
                         } else if noun.grammemes.contains("neut") {
-                            adj_gender = "neut";
-                        }
-
-                        let mut adj_number = "sing";
-                        if noun.grammemes.contains("plur") {
-                            adj_number = "plur";
-                        }
-
-                        let adj_case = if let Some(gc) = noun.governed_case {
-                            gc.as_grammeme()
+                            "neut"
                         } else {
-                            "nomn"
+                            "masc"
                         };
+                        let adj_number = if noun.grammemes.contains("plur") {
+                            "plur"
+                        } else {
+                            "sing"
+                        };
+                        let adj_case = noun
+                            .governed_case
+                            .map(|c| c.as_grammeme())
+                            .unwrap_or("nomn");
 
-                        let req = vec!["ADJF", adj_gender, adj_number, adj_case];
-                        let inflected = self.inflect(&tok.original, &req).await;
-                        output_words.push(inflected);
+                        InflectionJob::Adjective {
+                            word: tok.original.clone(),
+                            req: vec!["ADJF", adj_gender, adj_number, adj_case],
+                        }
                     } else {
-                        let inflected = self.inflect(&tok.original, &["ADVB"]).await;
-                        output_words.push(inflected);
+                        InflectionJob::AdjectiveAsAdverb {
+                            word: tok.original.clone(),
+                        }
                     }
                 }
 
                 Pos::Verb => {
                     if first_noun_idx.is_none() && i == 1 {
-                        let deverbal = self.derive_deverbal_noun(&tok.original).await;
-                        output_words.push(deverbal);
+                        InflectionJob::DeverbalNoun {
+                            word: tok.original.clone(),
+                        }
                     } else {
                         let mut req = vec!["VERB", "indc", subject_number];
                         if tok.grammemes.contains("past") {
@@ -613,46 +619,93 @@ impl Morpher {
                             req.push("pres");
                             req.push("3per");
                         }
-
-                        let inflected = self.inflect(&tok.original, &req).await;
-                        output_words.push(inflected);
+                        InflectionJob::Verb {
+                            word: tok.original.clone(),
+                            req,
+                        }
                     }
                 }
 
                 Pos::Adv => {
-                    if let Some(gc) = tok.governed_case {
-                        if gc == Case::Genitive && tok.original == "кондитерски" {
-                            output_words.push("кондитера".to_string());
-                            continue;
+                    let is_governed_genitive =
+                        tok.governed_case == Some(Case::Genitive) && tok.original == "кондитерски";
+                    if is_governed_genitive {
+                        InflectionJob::AdverbGoverned {
+                            word: tok.original.clone(),
                         }
+                    } else {
+                        InflectionJob::Literal(tok.original.clone())
                     }
-                    output_words.push(tok.original.clone());
                 }
 
                 Pos::Noun | Pos::Npro => {
-                    let target_case = if let Some(gc) = tok.governed_case {
-                        gc.as_grammeme()
-                    } else {
-                        "nomn"
-                    };
-
+                    let target_case = tok.governed_case.map(|c| c.as_grammeme()).unwrap_or("nomn");
                     let target_number = if tok.grammemes.contains("plur") {
                         "plur"
                     } else {
                         "sing"
                     };
-
-                    let req = vec!["NOUN", target_case, target_number];
-                    let inflected = self.inflect(&tok.original, &req).await;
-                    output_words.push(inflected);
+                    InflectionJob::Noun {
+                        word: tok.original.clone(),
+                        req: vec!["NOUN", target_case, target_number],
+                    }
                 }
 
-                _ => {
-                    output_words.push(tok.original.clone());
-                }
-            }
+                _ => InflectionJob::Literal(tok.original.clone()),
+            };
+
+            jobs.push(job);
         }
+
+        // Pass 4b: resolve every job concurrently, preserving order.
+        let output_words: Vec<String> = join_all(jobs.into_iter().map(|job| async move {
+            match job {
+                InflectionJob::ShortAdj {
+                    word,
+                    gender,
+                    number,
+                } => self.derive_short_adj(&word, gender, number).await,
+                InflectionJob::Adjective { word, req } => self.inflect(&word, &req).await,
+                InflectionJob::AdjectiveAsAdverb { word } => self.inflect(&word, &["ADVB"]).await,
+                InflectionJob::DeverbalNoun { word } => self.derive_deverbal_noun(&word).await,
+                InflectionJob::Verb { word, req } => self.inflect(&word, &req).await,
+                InflectionJob::AdverbGoverned { word: _ } => "кондитера".to_string(),
+                InflectionJob::Literal(w) => w,
+                InflectionJob::Noun { word, req } => self.inflect(&word, &req).await,
+            }
+        }))
+        .await;
 
         output_words.join(" ")
     }
+}
+
+enum InflectionJob {
+    ShortAdj {
+        word: String,
+        gender: &'static str,
+        number: &'static str,
+    },
+    Adjective {
+        word: String,
+        req: Vec<&'static str>,
+    },
+    AdjectiveAsAdverb {
+        word: String,
+    },
+    DeverbalNoun {
+        word: String,
+    },
+    Verb {
+        word: String,
+        req: Vec<&'static str>,
+    },
+    AdverbGoverned {
+        word: String,
+    }, // the "кондитерски" -> "кондитера" special case
+    Literal(String),
+    Noun {
+        word: String,
+        req: Vec<&'static str>,
+    },
 }
