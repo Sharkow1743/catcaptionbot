@@ -8,3 +8,5 @@ robert-tiny2/
 *sqlite
 *.ttf
 .image_cache/
+*.db-wal
+*.db-shm

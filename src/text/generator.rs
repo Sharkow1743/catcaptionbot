@@ -4,42 +4,104 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use fastembed::{InitOptionsUserDefined, TextEmbedding, TokenizerFiles, UserDefinedEmbeddingModel};
 use rand::distr::Distribution;
 use rand::distr::weighted::WeightedIndex;
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
-use sqlx::{QueryBuilder, Sqlite};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
+use std::str::FromStr;
+use std::sync::{Arc, RwLock};
 use tokio::sync::Mutex;
+
+#[derive(Clone)]
+pub struct WordCandidate {
+    pub word: String,
+    pub weight: f64,
+}
+
+#[derive(Clone)]
+struct WordStore {
+    all_words: Vec<WordCandidate>,
+    by_pos: HashMap<Pos, Vec<WordCandidate>>,
+    by_id: HashMap<i64, (String, Pos, f64)>,
+    word_to_id: HashMap<String, i64>,
+}
 
 #[derive(Clone)]
 pub struct WordGenerator {
     pool: SqlitePool,
     embedder: Arc<Mutex<TextEmbedding>>,
-}
-
-struct WordCandidate {
-    word: String,
-    weight: f64,
+    embedding_cache: Arc<RwLock<HashMap<String, Vec<f32>>>>,
+    word_store: Arc<WordStore>,
 }
 
 impl WordGenerator {
-    /// Initializes DB Pool and loads local FastEmbed model from `robert-tiny2` directory
     pub async fn new(db_path: &str) -> anyhow::Result<Self> {
         Self::new_with_local_model(db_path, "robert-tiny2").await
     }
 
-    /// Initializes DB Pool and loads FastEmbed using local ONNX model files from `model_dir`
     pub async fn new_with_local_model(
         db_path: &str,
         model_dir: impl AsRef<Path>,
     ) -> anyhow::Result<Self> {
+        let connection_options = SqliteConnectOptions::from_str(&format!("sqlite:{}", db_path))?
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+            .pragma("mmap_size", "268435456")
+            .pragma("cache_size", "-64000")
+            .pragma("temp_store", "MEMORY");
+
         let pool = SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect(&format!("sqlite:{}", db_path))
+            .max_connections(10)
+            .connect_with(connection_options)
             .await?;
 
-        let dir = model_dir.as_ref();
+        // Preload words into in-memory store for instant zero-SQL candidate selection
+        let rows: Vec<(i64, String, String, f64)> =
+            sqlx::query_as("SELECT id, word, pos, weight FROM words")
+                .fetch_all(&pool)
+                .await
+                .unwrap_or_default();
 
+        let mut all_words = Vec::with_capacity(rows.len());
+        let mut by_pos: HashMap<Pos, Vec<WordCandidate>> = HashMap::new();
+        let mut by_id: HashMap<i64, (String, Pos, f64)> = HashMap::with_capacity(rows.len());
+        let mut word_to_id: HashMap<String, i64> = HashMap::with_capacity(rows.len());
+
+        for (id, word, pos_str, weight) in rows {
+            let pos = match pos_str.as_str() {
+                "NOUN" => Pos::Noun,
+                "ADJ" | "ADJF" | "ADJS" => Pos::Adj,
+                "VERB" | "INFN" => Pos::Verb,
+                "PRT" | "PRTF" | "PRTS" => Pos::Prt,
+                "GRND" => Pos::Grnd,
+                "ADV" | "ADVB" => Pos::Adv,
+                "COMP" => Pos::Comp,
+                "PRED" => Pos::Pred,
+                "NPRO" => Pos::Npro,
+                "NUMR" => Pos::Numr,
+                "PREP" => Pos::Prep,
+                _ => Pos::Misc,
+            };
+
+            let candidate = WordCandidate {
+                word: word.clone(),
+                weight: weight.max(0.0001),
+            };
+
+            by_pos.entry(pos).or_default().push(candidate.clone());
+            by_id.insert(id, (word.clone(), pos, weight.max(0.0001)));
+            word_to_id.insert(word.to_lowercase(), id);
+            all_words.push(candidate);
+        }
+
+        let word_store = Arc::new(WordStore {
+            all_words,
+            by_pos,
+            by_id,
+            word_to_id,
+        });
+
+        let dir = model_dir.as_ref();
         let onnx_bytes = fs::read(dir.join("model.onnx"))?;
         let tokenizer_bytes = fs::read(dir.join("tokenizer.json"))?;
 
@@ -60,6 +122,8 @@ impl WordGenerator {
         Ok(Self {
             pool,
             embedder: Arc::new(Mutex::new(embedder)),
+            embedding_cache: Arc::new(RwLock::new(HashMap::with_capacity(1024))),
+            word_store,
         })
     }
 
@@ -67,83 +131,85 @@ impl WordGenerator {
     // HELPER FUNCTIONS FOR VECTORIZATION
     // ========================================================================
 
-    /// Searches for a precomputed vector in the `vec_words` SQLite table
+    /// Direct point-lookup by rowid avoiding virtual-table JOIN stalls
     pub async fn find_vector_in_db(
         &self,
         word: impl AsRef<str>,
     ) -> anyhow::Result<Option<Vec<f32>>> {
-        let word_ref = word.as_ref();
-        let row: Option<(Vec<u8>,)> = sqlx::query_as(
-            "SELECT v.embedding
-             FROM vec_words v
-             JOIN words w ON v.rowid = w.id
-             WHERE w.word = ?",
-        )
-        .bind(word_ref.to_lowercase())
-        .fetch_optional(&self.pool)
-        .await?;
+        let word_ref = word.as_ref().trim().to_lowercase();
 
-        Ok(row.map(|(bytes,)| bytes_to_f32_vec(&bytes)))
+        let id = if let Some(&id) = self.word_store.word_to_id.get(&word_ref) {
+            Some(id)
+        } else {
+            let row: Option<(i64,)> = sqlx::query_as("SELECT id FROM words WHERE word = ? LIMIT 1")
+                .bind(&word_ref)
+                .fetch_optional(&self.pool)
+                .await?;
+            row.map(|(i,)| i)
+        };
+
+        if let Some(rowid) = id {
+            let row: Option<(Vec<u8>,)> =
+                sqlx::query_as("SELECT embedding FROM vec_words WHERE rowid = ? LIMIT 1")
+                    .bind(rowid)
+                    .fetch_optional(&self.pool)
+                    .await?;
+
+            return Ok(row.map(|(bytes,)| bytes_to_f32_vec(&bytes)));
+        }
+
+        Ok(None)
     }
 
-    /// Accepts a word or a multi-word phrase.
-    /// Tries DB lookup first; if missing, computes embedding using local FastEmbed model.
     pub async fn get_or_create_embedding(&self, text: impl AsRef<str>) -> anyhow::Result<Vec<f32>> {
         let text_ref = text.as_ref();
         let trimmed = text_ref.trim().to_lowercase();
 
+        if let Ok(cache) = self.embedding_cache.read() {
+            if let Some(vec) = cache.get(&trimmed) {
+                return Ok(vec.clone());
+            }
+        }
+
         if let Ok(Some(vec)) = self.find_vector_in_db(&trimmed).await {
+            if let Ok(mut cache) = self.embedding_cache.write() {
+                cache.insert(trimmed, vec.clone());
+            }
             return Ok(vec);
         }
 
         let mut embedder = self.embedder.lock().await;
-        let embeddings = embedder.embed(vec![trimmed], None)?;
+        let embeddings = embedder.embed(vec![trimmed.clone()], None)?;
 
-        embeddings
+        let vec = embeddings
             .into_iter()
             .next()
-            .ok_or_else(|| anyhow!("Failed to compute embedding"))
+            .ok_or_else(|| anyhow!("Failed to compute embedding"))?;
+
+        if let Ok(mut cache) = self.embedding_cache.write() {
+            cache.insert(trimmed, vec.clone());
+        }
+
+        Ok(vec)
     }
 
     // ========================================================================
     // MAIN PUBLIC QUERY FUNCTIONS
     // ========================================================================
 
-    /// Get N weighted random words (any POS)
     pub async fn get_random_words(&self, count: usize) -> anyhow::Result<Vec<String>> {
         self.get_random_words_by_pos(&[], count).await
     }
 
-    /// Get N weighted random words filtered by POS
     pub async fn get_random_words_by_pos(
         &self,
         poses: impl AsRef<[Pos]>,
         count: usize,
     ) -> anyhow::Result<Vec<String>> {
-        let poses_slice = poses.as_ref();
-        if count == 0 {
-            return Ok(vec![]);
-        }
-
-        let mut builder: QueryBuilder<Sqlite> = QueryBuilder::new("SELECT word FROM words ");
-
-        if !poses_slice.is_empty() {
-            builder.push("WHERE pos IN (");
-            let mut separated = builder.separated(", ");
-            for pos in poses_slice {
-                separated.push_bind(pos.as_str());
-            }
-            separated.push_unseparated(") ");
-        }
-
-        builder.push("ORDER BY RANDOM() * MAX(weight, 0.0001) DESC LIMIT ");
-        builder.push_bind(count as i64);
-
-        let rows: Vec<(String,)> = builder.build_query_as().fetch_all(&self.pool).await?;
-        Ok(rows.into_iter().map(|(w,)| w).collect())
+        let candidates = self.fetch_in_memory_candidates(poses.as_ref(), &[]);
+        Ok(weighted_sample_without_replacement(&candidates, count))
     }
 
-    /// Get N random words close in meaning to target vector
     pub async fn get_random_words_by_similarity(
         &self,
         target_vec: impl AsRef<[f32]>,
@@ -154,7 +220,6 @@ impl WordGenerator {
             .await
     }
 
-    /// Get N random words filtered by POS AND close in meaning to target vector
     pub async fn get_random_words_by_pos_and_similarity(
         &self,
         poses: impl AsRef<[Pos]>,
@@ -176,7 +241,6 @@ impl WordGenerator {
         Ok(weighted_sample_without_replacement(&candidates, count))
     }
 
-    /// Get random words matching a template specification (`&[WordSpec]`)
     pub async fn get_random_words_by_template(
         &self,
         template: impl AsRef<[WordSpec]>,
@@ -193,8 +257,6 @@ impl WordGenerator {
             }
             let poses = spec.poses.as_deref().unwrap_or(&[]);
 
-            // Resolve the target vector from either an already-materialized Vec<f32>
-            // or a precomputed base64 string.
             let resolved_target_vec: Option<Vec<f32>> = match (
                 &spec.target_vec,
                 &spec.target_vec_q8_str,
@@ -211,20 +273,22 @@ impl WordGenerator {
                 excludes.extend(extra.iter().map(|w| w.to_lowercase()));
             }
 
-            let candidates = if let Some(ref target_vec) = resolved_target_vec {
-                self.fetch_knn_candidates(
-                    target_vec,
-                    poses,
-                    &excludes,
-                    spec.top_k,
-                    spec.min_similarity,
-                )
-                .await?
+            let sampled = if let Some(ref target_vec) = resolved_target_vec {
+                let candidates = self
+                    .fetch_knn_candidates(
+                        target_vec,
+                        poses,
+                        &excludes,
+                        spec.top_k,
+                        spec.min_similarity,
+                    )
+                    .await?;
+                weighted_sample_without_replacement(&candidates, 1)
             } else {
-                self.fetch_random_candidates(poses, &excludes, 100).await?
+                let pool = self.fetch_in_memory_candidates(poses, &excludes);
+                weighted_sample_without_replacement(&pool, 1)
             };
 
-            let sampled = weighted_sample_without_replacement(&candidates, 1);
             if let Some(word) = sampled.into_iter().next() {
                 already_chosen.push(word.to_lowercase());
                 result.push(word);
@@ -246,10 +310,32 @@ impl WordGenerator {
     }
 
     // ========================================================================
-    // PRIVATE SQLITE-VEC QUERY HELPERS
+    // FAST IN-MEMORY & KNN SAMPLING
     // ========================================================================
 
-    /// Performs vector KNN search directly using sqlite-vec virtual table `vec_words`
+    fn fetch_in_memory_candidates(&self, poses: &[Pos], excludes: &[String]) -> Vec<WordCandidate> {
+        let candidates: Vec<&WordCandidate> = if poses.is_empty() {
+            self.word_store.all_words.iter().collect()
+        } else {
+            poses
+                .iter()
+                .filter_map(|p| self.word_store.by_pos.get(p))
+                .flatten()
+                .collect()
+        };
+
+        if excludes.is_empty() {
+            candidates.into_iter().cloned().collect()
+        } else {
+            let exclude_set: HashSet<&str> = excludes.iter().map(|s| s.as_str()).collect();
+            candidates
+                .into_iter()
+                .filter(|c| !exclude_set.contains(c.word.to_lowercase().as_str()))
+                .cloned()
+                .collect()
+        }
+    }
+
     async fn fetch_knn_candidates(
         &self,
         target_vec: &[f32],
@@ -259,7 +345,6 @@ impl WordGenerator {
         min_similarity: Option<f32>,
     ) -> anyhow::Result<Vec<WordCandidate>> {
         let k = top_k.unwrap_or(64).max(32);
-        // Expand search window if we have POS / exclude filters to prevent starvation
         let search_k = if !poses.is_empty() || !excludes.is_empty() {
             (k * 6).clamp(128, 1024)
         } else {
@@ -268,102 +353,45 @@ impl WordGenerator {
 
         let target_bytes = f32_vec_to_bytes(target_vec);
 
-        let mut builder: QueryBuilder<Sqlite> = QueryBuilder::new(
-            "SELECT w.word, w.weight, v.distance \
-             FROM vec_words v \
-             JOIN words w ON v.rowid = w.id \
-             WHERE v.embedding MATCH ",
-        );
-        builder.push_bind(target_bytes);
-        builder.push(" AND k = ");
-        builder.push_bind(search_k as i64);
-
-        if !poses.is_empty() {
-            builder.push(" AND w.pos IN (");
-            let mut separated = builder.separated(", ");
-            for pos in poses {
-                separated.push_bind(pos.as_str());
-            }
-            separated.push_unseparated(")");
-        }
-
-        if !excludes.is_empty() {
-            builder.push(" AND w.word NOT IN (");
-            let mut separated = builder.separated(", ");
-            for word in excludes {
-                separated.push_bind(word.to_lowercase());
-            }
-            separated.push_unseparated(")");
-        }
-
-        let rows: Vec<(String, f64, f64)> = builder.build_query_as().fetch_all(&self.pool).await?;
+        let rows: Vec<(i64, f64)> = sqlx::query_as(
+            "SELECT rowid, distance FROM vec_words WHERE embedding MATCH ? AND k = ?",
+        )
+        .bind(target_bytes)
+        .bind(search_k as i64)
+        .fetch_all(&self.pool)
+        .await?;
 
         let min_sim = min_similarity.unwrap_or(-1.0);
+        let exclude_set: HashSet<String> = excludes.iter().map(|w| w.to_lowercase()).collect();
+        let pos_set: HashSet<Pos> = poses.iter().copied().collect();
 
-        let mut candidates: Vec<WordCandidate> = rows
-            .into_iter()
-            .filter_map(|(word, weight, distance)| {
-                // Cosine distance = 1.0 - cosine_similarity
-                let sim = 1.0 - distance as f32;
-                if sim >= min_sim {
-                    Some(WordCandidate { word, weight })
-                } else {
-                    None
+        let mut candidates: Vec<WordCandidate> = Vec::with_capacity(rows.len());
+
+        for (rowid, distance) in rows {
+            let sim = 1.0 - distance as f32;
+            if sim < min_sim {
+                continue;
+            }
+
+            if let Some((word, pos, weight)) = self.word_store.by_id.get(&rowid) {
+                if !pos_set.is_empty() && !pos_set.contains(pos) {
+                    continue;
                 }
-            })
-            .collect();
+                if !exclude_set.is_empty() && exclude_set.contains(&word.to_lowercase()) {
+                    continue;
+                }
+                candidates.push(WordCandidate {
+                    word: word.clone(),
+                    weight: *weight,
+                });
+            }
+        }
 
         if let Some(limit) = top_k {
             candidates.truncate(limit);
         }
 
         Ok(candidates)
-    }
-
-    /// Fast non-vector candidate fetch for templates without similarity requirements
-    async fn fetch_random_candidates(
-        &self,
-        poses: &[Pos],
-        excludes: &[String],
-        limit: usize,
-    ) -> anyhow::Result<Vec<WordCandidate>> {
-        let mut builder: QueryBuilder<Sqlite> =
-            QueryBuilder::new("SELECT w.word, w.weight FROM words w ");
-
-        let mut has_where = false;
-
-        if !poses.is_empty() {
-            builder.push("WHERE w.pos IN (");
-            let mut separated = builder.separated(", ");
-            for pos in poses {
-                separated.push_bind(pos.as_str());
-            }
-            separated.push_unseparated(") ");
-            has_where = true;
-        }
-
-        if !excludes.is_empty() {
-            builder.push(if has_where {
-                "AND w.word NOT IN ("
-            } else {
-                "WHERE w.word NOT IN ("
-            });
-            let mut separated = builder.separated(", ");
-            for word in excludes {
-                separated.push_bind(word.to_lowercase());
-            }
-            separated.push_unseparated(") ");
-        }
-
-        builder.push("ORDER BY RANDOM() * MAX(w.weight, 0.0001) DESC LIMIT ");
-        builder.push_bind(limit as i64);
-
-        let rows: Vec<(String, f64)> = builder.build_query_as().fetch_all(&self.pool).await?;
-
-        Ok(rows
-            .into_iter()
-            .map(|(word, weight)| WordCandidate { word, weight })
-            .collect())
     }
 }
 
@@ -413,7 +441,6 @@ fn weighted_sample_without_replacement(candidates: &[WordCandidate], count: usiz
     result
 }
 
-/// Encodes a vector as base64 over its raw little-endian f32 bytes.
 pub fn encode_embedding(v: &[f32]) -> String {
     let mut bytes = Vec::with_capacity(v.len() * 4);
     for f in v {
@@ -422,7 +449,6 @@ pub fn encode_embedding(v: &[f32]) -> String {
     STANDARD.encode(bytes)
 }
 
-/// Decodes a base64 string back into a `Vec<f32>`.
 pub fn decode_embedding_str(s: impl AsRef<str>) -> anyhow::Result<Vec<f32>> {
     let bytes = STANDARD.decode(s.as_ref().trim())?;
     if bytes.len() % 4 != 0 {
@@ -434,7 +460,6 @@ pub fn decode_embedding_str(s: impl AsRef<str>) -> anyhow::Result<Vec<f32>> {
     Ok(bytes_to_f32_vec(&bytes))
 }
 
-/// Encodes a vector as base64 over a quantized int8 representation.
 pub fn encode_embedding_q8(v: &[f32]) -> String {
     let max_abs = v.iter().fold(0.0f32, |acc, x| acc.max(x.abs()));
     let scale = if max_abs > 0.0 { max_abs / 127.0 } else { 1.0 };
@@ -448,7 +473,6 @@ pub fn encode_embedding_q8(v: &[f32]) -> String {
     STANDARD.encode(bytes)
 }
 
-/// Decodes a base64 string produced by `encode_embedding_q8` back into a `Vec<f32>`.
 pub fn decode_embedding_q8_str(s: impl AsRef<str>) -> anyhow::Result<Vec<f32>> {
     let bytes = STANDARD.decode(s.as_ref().trim())?;
     if bytes.len() < 5 {

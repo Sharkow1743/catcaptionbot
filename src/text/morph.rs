@@ -1,11 +1,15 @@
 use super::types::{Case, Gender, Number, Pos, WordAnalysis};
-use futures::future::join_all;
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
-use std::collections::HashSet;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use sqlx::{QueryBuilder, Sqlite};
+use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
+use std::sync::{Arc, RwLock};
 
 #[derive(Clone)]
 pub struct Morpher {
     pool: SqlitePool,
+    analysis_cache: Arc<RwLock<HashMap<String, WordAnalysis>>>,
+    forms_cache: Arc<RwLock<HashMap<String, Vec<(String, String)>>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -21,57 +25,115 @@ struct TokenParse {
 
 impl Morpher {
     pub async fn new(db_path: impl AsRef<str>) -> Result<Self, sqlx::Error> {
+        let connection_options =
+            SqliteConnectOptions::from_str(&format!("sqlite:{}", db_path.as_ref()))?
+                .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+                .pragma("mmap_size", "268435456")
+                .pragma("cache_size", "-64000")
+                .pragma("temp_store", "MEMORY");
+
         let pool = SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect(&format!("sqlite:{}", db_path.as_ref()))
+            .max_connections(10)
+            .connect_with(connection_options)
             .await?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            analysis_cache: Arc::new(RwLock::new(HashMap::with_capacity(4096))),
+            forms_cache: Arc::new(RwLock::new(HashMap::with_capacity(4096))),
+        })
     }
 
     // ========================================================================
-    // PARSE & GRAMMEME ENGINE
+    // BATCH & CACHED ANALYSIS ENGINE
     // ========================================================================
 
-    pub async fn analyze_word(&self, word: impl AsRef<str>) -> WordAnalysis {
-        let w = word.as_ref().to_lowercase();
+    pub async fn analyze_words_batch(&self, words: &[String]) -> Vec<WordAnalysis> {
+        let mut results = vec![None; words.len()];
+        let mut missing_indices = Vec::new();
+        let mut missing_words = Vec::new();
 
-        let row: Option<(String, String)> = sqlx::query_as(
-            "SELECT tag, lemma FROM dictionary WHERE word = ?
-             ORDER BY
-               CASE
-                 WHEN tag LIKE '%PREP%' THEN 1
-                 WHEN tag LIKE '%CONJ%' THEN 1
-                 WHEN tag LIKE '%PRCL%' THEN 1
-                 WHEN tag LIKE '%ADVB%' THEN 2
-                 WHEN tag LIKE '%NOUN%' THEN 3
-                 WHEN tag LIKE '%VERB%' OR tag LIKE '%INFN%' THEN 4
-                 WHEN tag LIKE '%ADJF%' OR tag LIKE '%PRTF%' THEN 5
-                 ELSE 6
-               END
-             LIMIT 1",
-        )
-        .bind(&w)
-        .fetch_optional(&self.pool)
-        .await
-        .unwrap_or(None);
-
-        if let Some((tag, lemma)) = row {
-            return Self::parse_opencorpora_tag(&w, &lemma, &tag);
+        if let Ok(cache) = self.analysis_cache.read() {
+            for (i, word) in words.iter().enumerate() {
+                let w = word.trim().to_lowercase();
+                if let Some(analysis) = cache.get(&w) {
+                    results[i] = Some(analysis.clone());
+                } else {
+                    missing_indices.push(i);
+                    missing_words.push(w);
+                }
+            }
         }
 
-        Self::analyze_by_heuristics(&w)
+        if !missing_words.is_empty() {
+            let mut builder: QueryBuilder<Sqlite> =
+                QueryBuilder::new("SELECT word, tag, lemma FROM dictionary WHERE word IN (");
+            {
+                let mut sep = builder.separated(", ");
+                for w in &missing_words {
+                    sep.push_bind(w);
+                }
+            }
+            builder.push(
+                ") ORDER BY CASE \
+                 WHEN tag LIKE '%ADJF%' OR tag LIKE '%ADJS%' THEN 1 \
+                 WHEN tag LIKE '%NOUN%' THEN 2 \
+                 WHEN tag LIKE '%VERB%' OR tag LIKE '%INFN%' THEN 3 \
+                 WHEN tag LIKE '%PREP%' THEN 4 \
+                 WHEN tag LIKE '%ADVB%' THEN 5 \
+                 ELSE 6 END",
+            );
+
+            let rows: Vec<(String, String, String)> = builder
+                .build_query_as()
+                .fetch_all(&self.pool)
+                .await
+                .unwrap_or_default();
+
+            let mut fetched_map: HashMap<String, (String, String)> = HashMap::new();
+            for (w, tag, lemma) in rows {
+                fetched_map.entry(w).or_insert((tag, lemma));
+            }
+
+            let mut write_cache = self.analysis_cache.write().ok();
+
+            for (idx, w) in missing_indices.into_iter().zip(missing_words.into_iter()) {
+                let analysis = if let Some((tag, lemma)) = fetched_map.get(&w) {
+                    Self::parse_opencorpora_tag(&w, lemma, tag)
+                } else {
+                    Self::analyze_by_heuristics(&w)
+                };
+
+                if let Some(ref mut c) = write_cache {
+                    c.insert(w, analysis.clone());
+                }
+
+                results[idx] = Some(analysis);
+            }
+        }
+
+        results.into_iter().map(|opt| opt.unwrap()).collect()
+    }
+
+    pub async fn analyze_word(&self, word: impl AsRef<str>) -> WordAnalysis {
+        let w = word.as_ref().trim().to_lowercase();
+        self.analyze_words_batch(&[w])
+            .await
+            .into_iter()
+            .next()
+            .unwrap()
     }
 
     fn parse_opencorpora_tag(word: &str, lemma: &str, tag: &str) -> WordAnalysis {
         let pos = if tag.contains("PREP") {
             Pos::Prep
+        } else if tag.contains("ADJF") || tag.contains("ADJS") {
+            Pos::Adj
         } else if tag.contains("ADVB") {
             Pos::Adv
         } else if tag.contains("NOUN") {
             Pos::Noun
-        } else if tag.contains("ADJF") || tag.contains("ADJS") {
-            Pos::Adj
         } else if tag.contains("PRTF") || tag.contains("PRTS") {
             Pos::Prt
         } else if tag.contains("GRND") {
@@ -142,10 +204,11 @@ impl Morpher {
             (Pos::Adj, Gender::Masculine, Number::Plural)
         } else if w.ends_with("ть") || w.ends_with("ти") || w.ends_with("ться") {
             (Pos::Verb, Gender::Masculine, Number::Singular)
-        } else if w.ends_with('а') || w.ends_with('я') || w.ends_with("ккал") || w.ends_with("кал")
-        {
+        } else if w.ends_with('а') || w.ends_with('я') {
             (Pos::Noun, Gender::Feminine, Number::Singular)
-        } else if w.ends_with('о')
+        } else if w.ends_with("ие")
+            || w.ends_with("ье")
+            || w.ends_with('о')
             || w.ends_with('е')
             || w.ends_with('и')
             || w.ends_with('у')
@@ -165,7 +228,11 @@ impl Morpher {
             gender,
             number,
             case: Case::Nominative,
-            tag: format!("{},{}", pos.as_str(), gender.as_grammeme()),
+            tag: format!(
+                "{},{},sing,nomn",
+                pos.to_opencorpora_tag(),
+                gender.as_grammeme()
+            ),
         }
     }
 
@@ -211,14 +278,9 @@ impl Morpher {
         updated
     }
 
-    fn score_tag_match(
-        candidate_grammemes: &HashSet<String>,
-        target_grammemes: &HashSet<String>,
-    ) -> f32 {
-        let intersection = candidate_grammemes.intersection(target_grammemes).count() as f32;
-        let sym_diff = candidate_grammemes
-            .symmetric_difference(target_grammemes)
-            .count() as f32;
+    fn score_tag_match(candidate: &HashSet<String>, target: &HashSet<String>) -> f32 {
+        let intersection = candidate.intersection(target).count() as f32;
+        let sym_diff = candidate.symmetric_difference(target).count() as f32;
         intersection - (0.1 * sym_diff)
     }
 
@@ -277,7 +339,6 @@ impl Morpher {
                     }
                 }
                 _ => {
-                    // masc
                     if w.ends_with("тельный") && w.len() >= 14 {
                         format!("{}телен", &w[..w.len() - 14])
                     } else if w.ends_with("нный") && w.len() >= 8 {
@@ -296,30 +357,23 @@ impl Morpher {
         }
     }
 
-    pub async fn derive_deverbal_noun(&self, verb_word: &str) -> String {
-        let w = verb_word.to_lowercase();
-        let prefix_len = w.len().min(6);
-
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT word FROM dictionary
-             WHERE (word_rev LIKE 'еин%' OR word LIKE 'еит%')
-             AND word LIKE ? LIMIT 1",
-        )
-        .bind(format!("{}%", &w[..prefix_len]))
-        .fetch_optional(&self.pool)
-        .await
-        .unwrap_or(None);
-
-        if let Some((noun_word,)) = row {
-            return noun_word;
+    pub fn derive_deverbal_noun_pure(verb_word: &str) -> String {
+        let mut s = verb_word.to_lowercase();
+        if s.ends_with("ся") || s.ends_with("сь") {
+            let len = s.len();
+            if len >= 4 {
+                s.truncate(len - 4);
+            }
         }
 
-        if w.starts_with("сопр") || w.starts_with("спир") {
-            "спирание".to_string()
-        } else if (w.ends_with("ть") || w.ends_with("ти")) && w.len() >= 4 {
-            format!("{}ние", &w[..w.len() - 4])
+        if (s.ends_with("ить") || s.ends_with("еть")) && s.len() >= 6 {
+            format!("{}ение", &s[..s.len() - 6])
+        } else if (s.ends_with("ать") || s.ends_with("ять")) && s.len() >= 6 {
+            format!("{}ание", &s[..s.len() - 6])
+        } else if (s.ends_with("ти") || s.ends_with("ть")) && s.len() >= 4 {
+            format!("{}тие", &s[..s.len() - 4])
         } else {
-            format!("{}ние", w)
+            format!("{}ние", s)
         }
     }
 
@@ -350,20 +404,37 @@ impl Morpher {
             return Self::derive_adverb(&w);
         }
 
-        let base_grammemes = Self::tag_to_grammemes(&analysis.tag);
-        let target_grammemes = Self::update_grammemes(&base_grammemes, required_grammemes);
+        let forms: Vec<(String, String)> = {
+            let cached = if let Ok(cache) = self.forms_cache.read() {
+                cache.get(&analysis.lemma).cloned()
+            } else {
+                None
+            };
 
-        let forms: Vec<(String, String)> =
-            sqlx::query_as("SELECT word, tag FROM dictionary WHERE lemma = ? OR word = ?")
-                .bind(&analysis.lemma)
-                .bind(&w)
-                .fetch_all(&self.pool)
-                .await
-                .unwrap_or_default();
+            if let Some(f) = cached {
+                f
+            } else {
+                let db_forms: Vec<(String, String)> =
+                    sqlx::query_as("SELECT word, tag FROM dictionary WHERE lemma = ? OR word = ?")
+                        .bind(&analysis.lemma)
+                        .bind(&w)
+                        .fetch_all(&self.pool)
+                        .await
+                        .unwrap_or_default();
+
+                if let Ok(mut cache) = self.forms_cache.write() {
+                    cache.insert(analysis.lemma.clone(), db_forms.clone());
+                }
+                db_forms
+            }
+        };
 
         if forms.is_empty() {
             return word_or_lemma.to_string();
         }
+
+        let base_grammemes = Self::tag_to_grammemes(&analysis.tag);
+        let target_grammemes = Self::update_grammemes(&base_grammemes, required_grammemes);
 
         let mut best_word = word_or_lemma.to_string();
         let mut best_score = f32::NEG_INFINITY;
@@ -391,7 +462,9 @@ impl Morpher {
             return String::new();
         }
 
-        let analyses = join_all(raw_words.iter().map(|w| self.analyze_word(w))).await;
+        // Single batch fetch for all token analyses
+        let analyses = self.analyze_words_batch(&raw_words).await;
+
         let mut tokens: Vec<TokenParse> = raw_words
             .iter()
             .zip(analyses)
@@ -409,7 +482,19 @@ impl Morpher {
             })
             .collect();
 
-        // 1. Pass 1: Preposition Governance
+        // 1. Pass 1: Early Promotion of Deverbal Nouns for Adj + Verb pairs
+        for i in 1..tokens.len() {
+            if tokens[i].pos == Pos::Verb && tokens[i - 1].pos == Pos::Adj {
+                let derived = Self::derive_deverbal_noun_pure(&tokens[i].original);
+                tokens[i].original = derived.clone();
+                tokens[i].lemma = derived;
+                tokens[i].pos = Pos::Noun;
+                tokens[i].raw_tag = "NOUN,neut,sing,nomn".to_string();
+                tokens[i].grammemes = Self::tag_to_grammemes("NOUN,neut,sing,nomn");
+            }
+        }
+
+        // 2. Pass 2: Preposition Governance
         for i in 0..tokens.len() {
             if tokens[i].pos == Pos::Prep {
                 let prep_word = tokens[i].original.to_lowercase();
@@ -439,7 +524,7 @@ impl Morpher {
             }
         }
 
-        // 2. Pass 2: Clause & Predicate Structural Detection
+        // 3. Pass 3: Clause & Predicate Structural Detection
         let mut has_verb = false;
         let mut is_reflexive_verb = false;
         let mut verb_idx = None;
@@ -456,7 +541,6 @@ impl Morpher {
             }
         }
 
-        // Detect Predicate Adjectives
         let mut noun_count = 0;
         let mut first_noun_idx = None;
         let mut second_noun_idx = None;
@@ -476,10 +560,7 @@ impl Morpher {
         if !has_verb && noun_count >= 2 {
             if let (Some(n1), Some(n2)) = (first_noun_idx, second_noun_idx) {
                 for idx in (n1 + 1)..n2 {
-                    if tokens[idx].pos == Pos::Adj
-                        || tokens[idx].pos == Pos::Adv
-                        || tokens[idx].lemma == "смерть"
-                    {
+                    if tokens[idx].pos == Pos::Adj || tokens[idx].lemma == "смерть" {
                         tokens[idx].is_predicate_adj = true;
                         predicate_adj_idx = Some(idx);
                         break;
@@ -488,7 +569,7 @@ impl Morpher {
             }
         }
 
-        // 3. Pass 3: Case & Role Propagation across Clauses
+        // 4. Pass 4: Subject Agreement Setup
         let mut subject_gender = "masc";
         let mut subject_number = "sing";
 
@@ -538,8 +619,7 @@ impl Morpher {
             }
         }
 
-        // Pass 4a: decide the job for every token — pure, no awaits, so this is just a
-        // straightforward sequential loop building index-ordered jobs.
+        // 5. Pass 5: Build Jobs
         let mut jobs: Vec<InflectionJob> = Vec::with_capacity(tokens.len());
 
         for i in 0..tokens.len() {
@@ -596,45 +676,83 @@ impl Morpher {
                             word: tok.original.clone(),
                             req: vec!["ADJF", adj_gender, adj_number, adj_case],
                         }
-                    } else {
+                    } else if i + 1 < tokens.len()
+                        && (tokens[i + 1].pos == Pos::Adj || tokens[i + 1].pos == Pos::Prt)
+                    {
                         InflectionJob::AdjectiveAsAdverb {
                             word: tok.original.clone(),
                         }
-                    }
-                }
-
-                Pos::Verb => {
-                    if first_noun_idx.is_none() && i == 1 {
-                        InflectionJob::DeverbalNoun {
-                            word: tok.original.clone(),
-                        }
                     } else {
-                        let mut req = vec!["VERB", "indc", subject_number];
-                        if tok.grammemes.contains("past") {
-                            req.push("past");
-                            if subject_number == "sing" {
-                                req.push(subject_gender);
-                            }
-                        } else {
-                            req.push("pres");
-                            req.push("3per");
-                        }
-                        InflectionJob::Verb {
+                        InflectionJob::Adjective {
                             word: tok.original.clone(),
-                            req,
+                            req: vec!["ADJF", "masc", "sing", "nomn"],
                         }
                     }
                 }
 
                 Pos::Adv => {
-                    let is_governed_genitive =
-                        tok.governed_case == Some(Case::Genitive) && tok.original == "кондитерски";
-                    if is_governed_genitive {
+                    let mut target_noun = None;
+                    if i + 1 < tokens.len()
+                        && (tokens[i + 1].pos == Pos::Noun || tokens[i + 1].pos == Pos::Npro)
+                    {
+                        target_noun = Some(&tokens[i + 1]);
+                    }
+
+                    if let Some(noun) = target_noun {
+                        let adj_gender = if noun.grammemes.contains("femn") {
+                            "femn"
+                        } else if noun.grammemes.contains("neut") {
+                            "neut"
+                        } else {
+                            "masc"
+                        };
+                        let adj_number = if noun.grammemes.contains("plur") {
+                            "plur"
+                        } else {
+                            "sing"
+                        };
+                        let adj_case = noun
+                            .governed_case
+                            .map(|c| c.as_grammeme())
+                            .unwrap_or("nomn");
+
+                        InflectionJob::Adjective {
+                            word: tok.original.clone(),
+                            req: vec!["ADJF", adj_gender, adj_number, adj_case],
+                        }
+                    } else if i == tokens.len() - 1
+                        && i > 0
+                        && (tokens[i - 1].pos == Pos::Adv || tokens[i - 1].pos == Pos::Adj)
+                    {
+                        InflectionJob::Adjective {
+                            word: tok.original.clone(),
+                            req: vec!["ADJF", "masc", "sing", "nomn"],
+                        }
+                    } else if tok.governed_case == Some(Case::Genitive)
+                        && tok.original == "кондитерски"
+                    {
                         InflectionJob::AdverbGoverned {
                             word: tok.original.clone(),
                         }
                     } else {
                         InflectionJob::Literal(tok.original.clone())
+                    }
+                }
+
+                Pos::Verb => {
+                    let mut req = vec!["VERB", "indc", subject_number];
+                    if tok.grammemes.contains("past") {
+                        req.push("past");
+                        if subject_number == "sing" {
+                            req.push(subject_gender);
+                        }
+                    } else {
+                        req.push("pres");
+                        req.push("3per");
+                    }
+                    InflectionJob::Verb {
+                        word: tok.original.clone(),
+                        req,
                     }
                 }
 
@@ -657,9 +775,9 @@ impl Morpher {
             jobs.push(job);
         }
 
-        // Pass 4b: resolve every job concurrently, preserving order.
-        let output_words: Vec<String> = join_all(jobs.into_iter().map(|job| async move {
-            match job {
+        let mut output_words: Vec<String> = Vec::with_capacity(jobs.len());
+        for job in jobs {
+            let res = match job {
                 InflectionJob::ShortAdj {
                     word,
                     gender,
@@ -667,14 +785,13 @@ impl Morpher {
                 } => self.derive_short_adj(&word, gender, number).await,
                 InflectionJob::Adjective { word, req } => self.inflect(&word, &req).await,
                 InflectionJob::AdjectiveAsAdverb { word } => self.inflect(&word, &["ADVB"]).await,
-                InflectionJob::DeverbalNoun { word } => self.derive_deverbal_noun(&word).await,
                 InflectionJob::Verb { word, req } => self.inflect(&word, &req).await,
                 InflectionJob::AdverbGoverned { word: _ } => "кондитера".to_string(),
                 InflectionJob::Literal(w) => w,
                 InflectionJob::Noun { word, req } => self.inflect(&word, &req).await,
-            }
-        }))
-        .await;
+            };
+            output_words.push(res);
+        }
 
         output_words.join(" ")
     }
@@ -693,16 +810,13 @@ enum InflectionJob {
     AdjectiveAsAdverb {
         word: String,
     },
-    DeverbalNoun {
-        word: String,
-    },
     Verb {
         word: String,
         req: Vec<&'static str>,
     },
     AdverbGoverned {
         word: String,
-    }, // the "кондитерски" -> "кондитера" special case
+    },
     Literal(String),
     Noun {
         word: String,
