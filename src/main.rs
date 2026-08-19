@@ -5,11 +5,12 @@ mod macros;
 mod state;
 mod text;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use commands::{Command, handle_help, handle_start};
 use content::rarity::RarityManager;
-use content::spawn_queue;
+use content::{WorkerPoolConfig, content_queue, spawn_producer};
 use controls::handle_keyboard_callback;
 use controls::kb_command::UpdateKbExt;
 use flume::Receiver;
@@ -60,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app_state = AppState { composer, client };
 
-    let content_queue = spawn_queue(app_state.clone(), 32, 1, 16);
+    let content_queue = content_queue(app_state.clone()).await;
 
     let handler = dialogue::enter::<Update, InMemStorage<State>, State, _>()
         .branch(

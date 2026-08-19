@@ -130,6 +130,8 @@ pub struct WordSpec {
     pub poses: Option<Vec<Pos>>,
     /// Optional target vector (phrase or word embedding)
     pub target_vec: Option<Vec<f32>>,
+    pub target_vec_str: Option<String>,
+    pub target_vec_q8_str: Option<String>,
     /// Limit candidate pool to top K closest words by vector similarity before weighted random choice
     pub top_k: Option<usize>,
     /// Minimum cosine similarity threshold (e.g. 0.3)
@@ -182,6 +184,16 @@ impl WordSpec {
     /// Never pick these specific words for this slot
     pub fn exclude(mut self, words: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.exclude = Some(words.into_iter().map(Into::into).collect());
+        self
+    }
+
+    pub fn similar_to_str(mut self, encoded: impl Into<String>) -> Self {
+        self.target_vec_str = Some(encoded.into());
+        self
+    }
+
+    pub fn similar_to_q8_str(mut self, encoded: impl Into<String>) -> Self {
+        self.target_vec_q8_str = Some(encoded.into());
         self
     }
 }

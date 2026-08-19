@@ -1,5 +1,6 @@
 use super::types::{Pos, WordSpec};
 use anyhow::anyhow;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use fastembed::{InitOptionsUserDefined, TextEmbedding, TokenizerFiles, UserDefinedEmbeddingModel};
 use rand::distr::Distribution;
 use rand::distr::weighted::WeightedIndex;
@@ -19,7 +20,6 @@ pub struct WordGenerator {
 struct WordCandidate {
     word: String,
     weight: f64,
-    embedding_bytes: Option<Vec<u8>>,
 }
 
 impl WordGenerator {
@@ -136,9 +136,6 @@ impl WordGenerator {
             separated.push_unseparated(") ");
         }
 
-        // Weighted-ish via ORDER BY RANDOM() weighted by a repeat trick is awkward in pure
-        // SQL; if strict weighting matters, keep the old path. If approximate weighting is
-        // fine (e.g. weight just nudges common words), this is far cheaper:
         builder.push("ORDER BY RANDOM() * MAX(weight, 0.0001) DESC LIMIT ");
         builder.push_bind(count as i64);
 
@@ -172,10 +169,11 @@ impl WordGenerator {
             return Ok(vec![]);
         }
 
-        let candidates = self.fetch_candidates(poses_slice, true, &[]).await?;
-        let filtered = filter_and_rank_by_similarity(candidates, target_slice, top_k, None);
+        let candidates = self
+            .fetch_knn_candidates(target_slice, poses_slice, &[], top_k, None)
+            .await?;
 
-        Ok(weighted_sample_without_replacement(&filtered, count))
+        Ok(weighted_sample_without_replacement(&candidates, count))
     }
 
     /// Get random words matching a template specification (`&[WordSpec]`)
@@ -193,57 +191,144 @@ impl WordGenerator {
                 already_chosen.push(fixed.to_lowercase());
                 continue;
             }
-
             let poses = spec.poses.as_deref().unwrap_or(&[]);
-            let requires_vectors = spec.target_vec.is_some();
+
+            // Resolve the target vector from either an already-materialized Vec<f32>
+            // or a precomputed base64 string.
+            let resolved_target_vec: Option<Vec<f32>> = match (
+                &spec.target_vec,
+                &spec.target_vec_q8_str,
+                &spec.target_vec_str,
+            ) {
+                (Some(v), _, _) => Some(v.clone()),
+                (None, Some(s), _) => Some(decode_embedding_q8_str(s)?),
+                (None, None, Some(s)) => Some(decode_embedding_str(s)?),
+                (None, None, None) => None,
+            };
 
             let mut excludes = already_chosen.clone();
             if let Some(ref extra) = spec.exclude {
                 excludes.extend(extra.iter().map(|w| w.to_lowercase()));
             }
 
-            let candidates = self
-                .fetch_candidates(poses, requires_vectors, &excludes)
-                .await?;
-
-            let final_candidates = if let Some(ref target_vec) = spec.target_vec {
-                filter_and_rank_by_similarity(
-                    candidates,
+            let candidates = if let Some(ref target_vec) = resolved_target_vec {
+                self.fetch_knn_candidates(
                     target_vec,
+                    poses,
+                    &excludes,
                     spec.top_k,
                     spec.min_similarity,
                 )
+                .await?
             } else {
-                candidates
+                self.fetch_random_candidates(poses, &excludes, 100).await?
             };
 
-            let sampled = weighted_sample_without_replacement(&final_candidates, 1);
+            let sampled = weighted_sample_without_replacement(&candidates, 1);
             if let Some(word) = sampled.into_iter().next() {
                 already_chosen.push(word.to_lowercase());
                 result.push(word);
             }
         }
-
         Ok(result)
     }
 
+    pub async fn get_random_words_by_pos_and_similarity_str(
+        &self,
+        poses: impl AsRef<[Pos]>,
+        encoded_target_vec: impl AsRef<str>,
+        count: usize,
+        top_k: Option<usize>,
+    ) -> anyhow::Result<Vec<String>> {
+        let target_vec = decode_embedding_str(encoded_target_vec)?;
+        self.get_random_words_by_pos_and_similarity(poses, &target_vec, count, top_k)
+            .await
+    }
+
     // ========================================================================
-    // PRIVATE SQL HELPERS
+    // PRIVATE SQLITE-VEC QUERY HELPERS
     // ========================================================================
 
-    async fn fetch_candidates(
+    /// Performs vector KNN search directly using sqlite-vec virtual table `vec_words`
+    async fn fetch_knn_candidates(
+        &self,
+        target_vec: &[f32],
+        poses: &[Pos],
+        excludes: &[String],
+        top_k: Option<usize>,
+        min_similarity: Option<f32>,
+    ) -> anyhow::Result<Vec<WordCandidate>> {
+        let k = top_k.unwrap_or(64).max(32);
+        // Expand search window if we have POS / exclude filters to prevent starvation
+        let search_k = if !poses.is_empty() || !excludes.is_empty() {
+            (k * 6).clamp(128, 1024)
+        } else {
+            k
+        };
+
+        let target_bytes = f32_vec_to_bytes(target_vec);
+
+        let mut builder: QueryBuilder<Sqlite> = QueryBuilder::new(
+            "SELECT w.word, w.weight, v.distance \
+             FROM vec_words v \
+             JOIN words w ON v.rowid = w.id \
+             WHERE v.embedding MATCH ",
+        );
+        builder.push_bind(target_bytes);
+        builder.push(" AND k = ");
+        builder.push_bind(search_k as i64);
+
+        if !poses.is_empty() {
+            builder.push(" AND w.pos IN (");
+            let mut separated = builder.separated(", ");
+            for pos in poses {
+                separated.push_bind(pos.as_str());
+            }
+            separated.push_unseparated(")");
+        }
+
+        if !excludes.is_empty() {
+            builder.push(" AND w.word NOT IN (");
+            let mut separated = builder.separated(", ");
+            for word in excludes {
+                separated.push_bind(word.to_lowercase());
+            }
+            separated.push_unseparated(")");
+        }
+
+        let rows: Vec<(String, f64, f64)> = builder.build_query_as().fetch_all(&self.pool).await?;
+
+        let min_sim = min_similarity.unwrap_or(-1.0);
+
+        let mut candidates: Vec<WordCandidate> = rows
+            .into_iter()
+            .filter_map(|(word, weight, distance)| {
+                // Cosine distance = 1.0 - cosine_similarity
+                let sim = 1.0 - distance as f32;
+                if sim >= min_sim {
+                    Some(WordCandidate { word, weight })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if let Some(limit) = top_k {
+            candidates.truncate(limit);
+        }
+
+        Ok(candidates)
+    }
+
+    /// Fast non-vector candidate fetch for templates without similarity requirements
+    async fn fetch_random_candidates(
         &self,
         poses: &[Pos],
-        include_embeddings: bool,
         excludes: &[String],
+        limit: usize,
     ) -> anyhow::Result<Vec<WordCandidate>> {
-        let mut builder: QueryBuilder<Sqlite> = QueryBuilder::new("SELECT w.word, w.weight, ");
-
-        if include_embeddings {
-            builder.push("v.embedding FROM words w JOIN vec_words v ON w.id = v.rowid ");
-        } else {
-            builder.push("NULL as embedding FROM words w ");
-        }
+        let mut builder: QueryBuilder<Sqlite> =
+            QueryBuilder::new("SELECT w.word, w.weight FROM words w ");
 
         let mut has_where = false;
 
@@ -270,22 +355,20 @@ impl WordGenerator {
             separated.push_unseparated(") ");
         }
 
-        let query = builder.build_query_as::<(String, f64, Option<Vec<u8>>)>();
-        let rows = query.fetch_all(&self.pool).await?;
+        builder.push("ORDER BY RANDOM() * MAX(w.weight, 0.0001) DESC LIMIT ");
+        builder.push_bind(limit as i64);
+
+        let rows: Vec<(String, f64)> = builder.build_query_as().fetch_all(&self.pool).await?;
 
         Ok(rows
             .into_iter()
-            .map(|(word, weight, embedding_bytes)| WordCandidate {
-                word,
-                weight,
-                embedding_bytes,
-            })
+            .map(|(word, weight)| WordCandidate { word, weight })
             .collect())
     }
 }
 
 // ============================================================================
-// VECTOR MATH & SAMPLING UTILITIES
+// VECTOR CONVERSION & SAMPLING UTILITIES
 // ============================================================================
 
 fn bytes_to_f32_vec(bytes: &[u8]) -> Vec<f32> {
@@ -295,56 +378,12 @@ fn bytes_to_f32_vec(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    let mut dot = 0.0;
-    let mut norm_a = 0.0;
-    let mut norm_b = 0.0;
-
-    for (x, y) in a.iter().zip(b) {
-        dot += x * y;
-        norm_a += x * x;
-        norm_b += y * y;
+fn f32_vec_to_bytes(vec: &[f32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(vec.len() * 4);
+    for &f in vec {
+        bytes.extend_from_slice(&f.to_le_bytes());
     }
-
-    if norm_a == 0.0 || norm_b == 0.0 {
-        0.0
-    } else {
-        dot / (norm_a.sqrt() * norm_b.sqrt())
-    }
-}
-
-fn filter_and_rank_by_similarity(
-    candidates: Vec<WordCandidate>,
-    target_vec: &[f32],
-    top_k: Option<usize>,
-    min_similarity: Option<f32>,
-) -> Vec<WordCandidate> {
-    let min_sim = min_similarity.unwrap_or(-1.0);
-
-    let mut scored: Vec<(f32, WordCandidate)> = candidates
-        .into_iter()
-        .filter_map(|cand| {
-            if let Some(ref bytes) = cand.embedding_bytes {
-                let vec = bytes_to_f32_vec(bytes);
-                let sim = cosine_similarity(target_vec, &vec);
-                if sim >= min_sim {
-                    Some((sim, cand))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-
-    if let Some(k) = top_k {
-        scored.truncate(k);
-    }
-
-    scored.into_iter().map(|(_, cand)| cand).collect()
+    bytes
 }
 
 fn weighted_sample_without_replacement(candidates: &[WordCandidate], count: usize) -> Vec<String> {
@@ -372,4 +411,56 @@ fn weighted_sample_without_replacement(candidates: &[WordCandidate], count: usiz
     }
 
     result
+}
+
+/// Encodes a vector as base64 over its raw little-endian f32 bytes.
+pub fn encode_embedding(v: &[f32]) -> String {
+    let mut bytes = Vec::with_capacity(v.len() * 4);
+    for f in v {
+        bytes.extend_from_slice(&f.to_le_bytes());
+    }
+    STANDARD.encode(bytes)
+}
+
+/// Decodes a base64 string back into a `Vec<f32>`.
+pub fn decode_embedding_str(s: impl AsRef<str>) -> anyhow::Result<Vec<f32>> {
+    let bytes = STANDARD.decode(s.as_ref().trim())?;
+    if bytes.len() % 4 != 0 {
+        return Err(anyhow!(
+            "invalid embedding string: {} bytes is not a multiple of 4",
+            bytes.len()
+        ));
+    }
+    Ok(bytes_to_f32_vec(&bytes))
+}
+
+/// Encodes a vector as base64 over a quantized int8 representation.
+pub fn encode_embedding_q8(v: &[f32]) -> String {
+    let max_abs = v.iter().fold(0.0f32, |acc, x| acc.max(x.abs()));
+    let scale = if max_abs > 0.0 { max_abs / 127.0 } else { 1.0 };
+
+    let mut bytes = Vec::with_capacity(4 + v.len());
+    bytes.extend_from_slice(&scale.to_le_bytes());
+    for &f in v {
+        let q = (f / scale).round().clamp(-127.0, 127.0) as i8;
+        bytes.push(q as u8);
+    }
+    STANDARD.encode(bytes)
+}
+
+/// Decodes a base64 string produced by `encode_embedding_q8` back into a `Vec<f32>`.
+pub fn decode_embedding_q8_str(s: impl AsRef<str>) -> anyhow::Result<Vec<f32>> {
+    let bytes = STANDARD.decode(s.as_ref().trim())?;
+    if bytes.len() < 5 {
+        return Err(anyhow!(
+            "invalid quantized embedding string: {} bytes, need at least 5",
+            bytes.len()
+        ));
+    }
+    let scale = f32::from_le_bytes(bytes[0..4].try_into().unwrap());
+    let vec = bytes[4..]
+        .iter()
+        .map(|&b| (b as i8) as f32 * scale)
+        .collect();
+    Ok(vec)
 }

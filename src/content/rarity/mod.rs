@@ -23,6 +23,9 @@ pub trait Rarity: Send + Sync {
             WordSpec::new().poses(&[Pos::Noun]),
         ]
     }
+    fn template_failable(&self) -> anyhow::Result<Vec<WordSpec>> {
+        Ok(self.template())
+    }
     fn weight(&self) -> f32 {
         1.0
     }
@@ -38,20 +41,9 @@ pub trait Rarity: Send + Sync {
 }
 
 /// A single entry submitted into the global rarity registry.
-/// Populated via `inventory::submit!`, usually through the macros below.
 pub struct RarityRegistration(pub fn() -> Arc<dyn Rarity>);
 inventory::collect!(RarityRegistration);
 
-/// Defines a unit-struct `Rarity` and auto-registers it into the global
-/// registry. Anything after `name = "..."` is pasted verbatim into the
-/// `impl Rarity` block, so you can override any trait method.
-///
-/// ```ignore
-/// rarity_struct!(pub Legendary, id = "legendary", name = "Legendary",
-///     fn weight(&self) -> f32 { 0.01 }
-///     fn is_secret(&self) -> bool { true }
-/// );
-/// ```
 #[macro_export]
 macro_rules! rarity_struct {
     ($vis:vis $Name:ident, id = $id:literal, name = $name:literal $(, $($rest:tt)*)?) => {
@@ -69,13 +61,6 @@ macro_rules! rarity_struct {
     };
 }
 
-/// Registers any expression that produces a `Rarity` (e.g. a `SimpleRarity`
-/// builder chain, or a call to a function like `common()`) into the global
-/// registry, without needing a dedicated struct.
-///
-/// ```ignore
-/// crate::register_rarity!(common());
-/// ```
 #[macro_export]
 macro_rules! register_rarity {
     ($expr:expr) => {
@@ -112,8 +97,6 @@ impl RarityManager {
         self
     }
 
-    /// Builds a manager from every rarity submitted via `rarity_struct!` /
-    /// `register_rarity!` anywhere in the crate.
     pub fn from_registry() -> Self {
         let mut mgr = Self::new();
         for reg in inventory::iter::<RarityRegistration> {
@@ -122,11 +105,22 @@ impl RarityManager {
         mgr
     }
 
-    /// Process-wide singleton built from the registry. Lazily initialized
-    /// on first access.
     pub fn global() -> &'static RarityManager {
         static GLOBAL: OnceLock<RarityManager> = OnceLock::new();
         GLOBAL.get_or_init(RarityManager::from_registry)
+    }
+
+    pub fn total_weight(&self) -> f32 {
+        self.rarities.iter().map(|r| r.weight()).sum()
+    }
+
+    pub fn rarity_percentage(&self, rarity: &dyn Rarity) -> f32 {
+        let total = self.total_weight();
+        if total > 0.0 {
+            (rarity.weight() / total) * 100.0
+        } else {
+            0.0
+        }
     }
 
     pub fn pick(&self) -> Option<Arc<dyn Rarity>> {
@@ -146,6 +140,7 @@ pub struct SimpleRarity {
     rarity_color: Color,
     text_color: Color,
 }
+
 impl SimpleRarity {
     pub fn new(name: impl Into<String>, id: impl Into<String>) -> Self {
         Self {
@@ -184,6 +179,7 @@ impl SimpleRarity {
         self
     }
 }
+
 impl Rarity for SimpleRarity {
     fn name(&self) -> String {
         self.name.clone()

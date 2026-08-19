@@ -9,8 +9,8 @@ use teloxide::prelude::*;
 use teloxide::types::{KeyboardButton, KeyboardMarkup, Message};
 
 use crate::AppState;
-use crate::content::Content;
 use crate::content::rarity::RarityManager;
+use crate::content::{Content, RequestQueue, UserRequest};
 use crate::text::WordSpec;
 
 use super::reply_kb;
@@ -40,11 +40,11 @@ pub async fn handle_keyboard_callback(
     bot: Bot,
     dialogue: DialogueState,
     cmd: KbCommand,
-    content_queue: Receiver<Content>,
+    content_queue: RequestQueue<UserRequest, anyhow::Result<Content>>,
 ) -> HandlerResult {
     match cmd {
         KbCommand::Get => {
-            let mut content = content_queue.recv_async().await?;
+            let mut content = content_queue.request(UserRequest).await??;
 
             let image = content.image();
 
