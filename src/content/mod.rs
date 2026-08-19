@@ -28,8 +28,7 @@ async fn generate_rarity_text(
 pub async fn generate_content(app_state: &AppState) -> anyhow::Result<Content> {
     let start = Instant::now();
 
-    let rarity = app_state
-        .rarity_manager
+    let rarity = RarityManager::global()
         .pick()
         .ok_or_else(|| anyhow::anyhow!("Could not generate rarity"))?;
     log::debug!("Picked rarity: {}", rarity.name());

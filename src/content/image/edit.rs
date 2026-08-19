@@ -72,7 +72,7 @@ pub fn process_image(
     canvas.draw_image(&image, 0.0, 0.0, None);
 
     let typeface = impact_typeface()?;
-    canvas = bake_caption(canvas, &text, typeface)?;
+    canvas = bake_caption(canvas, &text, typeface, rarity)?;
 
     let baked = surface
         .make_image_snapshot()
@@ -100,6 +100,7 @@ pub fn bake_caption<'a>(
     mut canvas: Canvas<'a>,
     text: &str,
     typeface: Arc<Typeface>,
+    rarity: &dyn Rarity,
 ) -> anyhow::Result<Canvas<'a>> {
     let w_f = canvas.width() as f32;
     let h_f = canvas.height() as f32;
@@ -131,7 +132,7 @@ pub fn bake_caption<'a>(
     let mut y = h_f - bottom_margin - block_height + font_size; // baseline of first line
 
     let mut fill = Paint::new();
-    fill.set_color(Color::WHITE.into());
+    fill.set_color(rarity.text_color().into());
     fill.set_anti_alias(true);
     fill.set_style(Style::Fill);
 
