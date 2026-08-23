@@ -4,6 +4,7 @@ use std::time::Instant;
 use super::super::Rarity;
 use crate::content::rarity::RarityManager;
 use crate::content::types::CachedImage;
+use crate::stats;
 
 use bytes::Bytes;
 use skia_rs_canvas::{Canvas, Surface};
@@ -331,10 +332,10 @@ pub fn process_image(
     let mut out: Vec<u8> = Vec::with_capacity((w * h) as usize / 4);
     JpegEncoder::default().encode(&baked, &mut out)?;
 
-    log::info!(
+    stats!(
         "Processed image in {:?}\nEncoding: {:?}",
         start.elapsed(),
-        encode_start.elapsed()
+        encode_start.elapsed(),
     );
 
     Ok(CachedImage::from_bytes(out))

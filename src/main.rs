@@ -2,6 +2,7 @@ mod commands;
 mod content;
 mod controls;
 mod event;
+mod logger;
 mod macros;
 mod session;
 mod state;
@@ -40,7 +41,11 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    pretty_env_logger::init();
+    logger::builder()
+        .app(logger::FilterLevel::Detail)
+        .external(logger::FilterLevel::Warn)
+        .init();
+
     log::info!("Starting bot");
 
     unsafe {

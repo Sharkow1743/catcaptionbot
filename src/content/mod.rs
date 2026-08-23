@@ -3,9 +3,9 @@ use std::time::{Duration, Instant};
 
 use self::rarity::Rarity;
 
-use crate::AppState;
 use crate::session::UserSession;
 use crate::text::TextComposer;
+use crate::{AppState, stats};
 use bytes::Bytes;
 use flume::Receiver;
 use image::edit::{preprocess_image, process_image};
@@ -45,7 +45,7 @@ pub async fn content_queue(
         |state| async move {
             let fetch_time = Instant::now();
             let image = fetch_image(&state.client).await;
-            log::info!("Fetched image in {:?}", fetch_time.elapsed());
+            stats!("Fetched image in {:?}", fetch_time.elapsed());
             image
         },
     );
@@ -57,7 +57,7 @@ pub async fn content_queue(
         |image_bytes, _| async move {
             let preprocess_time = Instant::now();
             let image = spawn_blocking(move || preprocess_image(&image_bytes)).await?;
-            log::info!("Preprocessed image in {:?}", preprocess_time.elapsed());
+            stats!("Preprocessed image in {:?}", preprocess_time.elapsed());
             image
         },
     );
@@ -96,7 +96,7 @@ async fn process_content(
     };
     let image_time = image_time.elapsed();
 
-    log::info!(
+    stats!(
         "Content generated in {:?}\nRarity selection: {:?}\nText generation:  {:?}\nImage rendering:  {:?}",
         rarity_time + text_time + image_time,
         rarity_time,

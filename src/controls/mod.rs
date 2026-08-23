@@ -1,5 +1,6 @@
 pub mod kb_command;
 
+use std::time::Instant;
 use std::vec;
 
 use flume::Receiver;
@@ -12,7 +13,7 @@ use crate::content::rarity::RarityManager;
 use crate::content::{Content, KeyedBufferedQueue, RequestQueue};
 use crate::session::{UserSession, unix_timestamp};
 use crate::text::WordSpec;
-use crate::{AppState, emit, session};
+use crate::{AppState, emit, session, stats};
 
 use super::reply_kb;
 use super::state::DialogueState;
@@ -49,6 +50,8 @@ pub async fn handle_keyboard_callback(
         KbCommand::Get => {
             // emit!("pre_roll", &mut session).await;
 
+            let serve_time = Instant::now();
+
             let mut content = content_queue
                 .request(session.user_id, session.clone())
                 .await??;
@@ -61,6 +64,7 @@ pub async fn handle_keyboard_callback(
                 .photo()
                 && let Some(photo_meta) = photo_meta.get(0)
             {
+                stats!("Served content in {:?}", serve_time.elapsed());
                 Ok(photo_meta.clone().file.id)
             } else {
                 Err(anyhow::anyhow!("Cannot get photo id"))

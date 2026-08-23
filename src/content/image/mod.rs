@@ -10,6 +10,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::{fs, spawn};
 
+use crate::detail;
+
 pub async fn fetch_image(client: &Client) -> anyhow::Result<Bytes> {
     // Try fetching from API; on ANY failure, fall back to cache
     let bytes = match fetch_from_api(client).await {
@@ -98,6 +100,6 @@ async fn load_random_cached() -> anyhow::Result<Bytes> {
         .choose(&mut rng())
         .ok_or_else(|| anyhow::anyhow!("No cached images available for fallback"))?;
 
-    log::info!("Serving fallback from cache: {}", chosen.display());
+    detail!("Serving fallback from cache: {}", chosen.display());
     Ok(fs::read(chosen).await.map(Bytes::from)?)
 }
