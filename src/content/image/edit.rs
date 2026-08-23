@@ -7,8 +7,8 @@ use crate::content::types::CachedImage;
 
 use bytes::Bytes;
 use skia_rs_canvas::{Canvas, Surface};
-use skia_rs_codec::{Image, ImageEncoder, JpegEncoder, SamplingOptions, decode_image};
-use skia_rs_core::{Color, Rect};
+use skia_rs_codec::{Image, ImageEncoder, ImageInfo, JpegEncoder, SamplingOptions, decode_image};
+use skia_rs_core::{AlphaType, Color, ColorType, IRect, Rect};
 use skia_rs_paint::{Paint, Style};
 use skia_rs_text::{Font, Typeface};
 
@@ -41,6 +41,12 @@ pub const LINE_COLLISION_EXTRA_SPACING: f32 = 10.0;
 
 // Extra vertical shift applied ONLY when a descender (Д, Ц) on the bottom line collides with the badge
 pub const DESCENDER_AVOID_SHIFT: f32 = 14.0;
+
+// Per-channel tolerance when comparing pixel colors (0-255).
+const BORDER_COLOR_TOLERANCE: i16 = 8;
+// Fraction of pixels in a row/column that must match the reference
+// color for that row/column to be considered a solid border.
+const BORDER_MIN_MATCH_FRACTION: f32 = 0.98;
 
 // =========================================================================
 
@@ -182,15 +188,96 @@ fn descender_collides_with_badge(
         .any(|s| is_descender(s.ch) && s.right > badge_left && s.left < badge_right)
 }
 
+fn colors_match(a: [u8; 4], b: [u8; 4]) -> bool {
+    a.iter()
+        .zip(b.iter())
+        .all(|(&x, &y)| (x as i16 - y as i16).abs() <= BORDER_COLOR_TOLERANCE)
+}
+
+/// Reads pixels and returns the bounding rect of "real" content,
+/// stripping away uniform-color borders on any side.
+fn detect_content_bounds(image: &Image) -> anyhow::Result<IRect> {
+    let w = image.width();
+    let h = image.height();
+
+    let info = ImageInfo::new(w, h, ColorType::Rgba8888, AlphaType::Unpremul);
+    let row_bytes = w as usize * 4;
+    let mut pixels = vec![0u8; row_bytes * h as usize];
+
+    if !image.read_pixels(&info, &mut pixels, row_bytes, 0, 0) {
+        anyhow::bail!("Cannot read pixels");
+    }
+
+    let get = |x: i32, y: i32| -> [u8; 4] {
+        let idx = y as usize * row_bytes + x as usize * 4;
+        [
+            pixels[idx],
+            pixels[idx + 1],
+            pixels[idx + 2],
+            pixels[idx + 3],
+        ]
+    };
+
+    let row_is_border = |y: i32| -> bool {
+        let reference = get(0, y);
+        let matches = (0..w)
+            .filter(|&x| colors_match(get(x, y), reference))
+            .count();
+        matches as f32 / w as f32 >= BORDER_MIN_MATCH_FRACTION
+    };
+
+    let col_is_border = |x: i32| -> bool {
+        let reference = get(x, 0);
+        let matches = (0..h)
+            .filter(|&y| colors_match(get(x, y), reference))
+            .count();
+        matches as f32 / h as f32 >= BORDER_MIN_MATCH_FRACTION
+    };
+
+    let mut top = 0;
+    while top < h - 1 && row_is_border(top) {
+        top += 1;
+    }
+    let mut bottom = h - 1;
+    while bottom > top && row_is_border(bottom) {
+        bottom -= 1;
+    }
+
+    let mut left = 0;
+    while left < w - 1 && col_is_border(left) {
+        left += 1;
+    }
+    let mut right = w - 1;
+    while right > left && col_is_border(right) {
+        right -= 1;
+    }
+
+    // Fallback: if detection collapses to nothing sensible, keep the full image.
+    if top >= bottom || left >= right {
+        return Ok(IRect::new(0, 0, w, h));
+    }
+
+    Ok(IRect::new(left, top, right + 1, bottom + 1))
+}
+
 pub fn preprocess_image(image: &Bytes) -> anyhow::Result<Image> {
     let image = decode_image(image)?;
+
+    let full_bounds = IRect::new(0, 0, image.width(), image.height());
+    let content_bounds = detect_content_bounds(&image)?;
+
+    let image = if content_bounds != full_bounds {
+        image
+            .make_subset(&(content_bounds.into()))
+            .ok_or_else(|| anyhow::anyhow!("Cannot crop image borders"))?
+    } else {
+        image
+    };
+
     let (w, h) = image.dimensions();
-
     let proportional_h = h as f32 * (IMAGE_WIDTH / w as f32);
-
     let target_h = (proportional_h + (IMAGE_WIDTH - proportional_h) * SQUARE_FACTOR).round() as i32;
     let target_w = IMAGE_WIDTH as i32;
-
     image
         .make_scaled_with(target_w, target_h, SamplingOptions::Linear)
         .ok_or_else(|| anyhow::anyhow!("Cannot scale image"))

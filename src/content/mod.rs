@@ -1,22 +1,24 @@
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use self::rarity::Rarity;
 
 use crate::AppState;
+use crate::session::UserSession;
 use crate::text::TextComposer;
 use bytes::Bytes;
 use flume::Receiver;
 use image::edit::{preprocess_image, process_image};
 use image::fetch_image;
 pub use queue::{
-    RequestError, RequestQueue, WorkerPoolConfig, spawn_consumer, spawn_dependent_request_queue,
-    spawn_producer, spawn_transformer,
+    KeyedBufferConfig, KeyedBufferedQueue, RequestError, RequestQueue, WorkerPoolConfig,
+    spawn_consumer, spawn_dependent_request_queue, spawn_keyed_buffered_queue, spawn_producer,
+    spawn_transformer,
 };
 use rarity::RarityManager;
 use skia_rs_codec::Image;
 use tokio::task::spawn_blocking;
-pub use types::{Content, UserRequest};
+pub use types::Content;
 
 mod image;
 mod queue;
@@ -33,8 +35,9 @@ async fn generate_rarity_text(
 
 pub async fn content_queue(
     app_state: AppState,
-) -> RequestQueue<UserRequest, anyhow::Result<Content>> {
+) -> KeyedBufferedQueue<u64, UserSession, anyhow::Result<Content>> {
     let app_state = Arc::new(app_state);
+
     let image_fetch_queue: Receiver<Bytes> = spawn_producer(
         app_state.clone(),
         WorkerPoolConfig::new(1, 16, 32),
@@ -58,16 +61,19 @@ pub async fn content_queue(
         },
     );
 
-    spawn_dependent_request_queue(
+    // Buffers 2 ready images per active user, evicts users after 60s idle
+    let buffer_config = KeyedBufferConfig::new(2, Duration::from_secs(30));
+
+    spawn_keyed_buffered_queue(
         app_state.clone(),
         image_preprocess_queue,
-        WorkerPoolConfig::new(1, 16, 32),
+        buffer_config,
         process_content,
     )
 }
 
 async fn process_content(
-    req: UserRequest,
+    session: UserSession,
     image: Image,
     app_state: Arc<AppState>,
 ) -> anyhow::Result<Content> {

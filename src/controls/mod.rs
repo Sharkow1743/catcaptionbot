@@ -8,10 +8,11 @@ use reqwest::Client;
 use teloxide::prelude::*;
 use teloxide::types::{KeyboardButton, KeyboardMarkup, Message};
 
-use crate::AppState;
 use crate::content::rarity::RarityManager;
-use crate::content::{Content, RequestQueue, UserRequest};
+use crate::content::{Content, KeyedBufferedQueue, RequestQueue};
+use crate::session::UserSession;
 use crate::text::WordSpec;
+use crate::{AppState, session};
 
 use super::reply_kb;
 use super::state::DialogueState;
@@ -40,11 +41,12 @@ pub async fn handle_keyboard_callback(
     bot: Bot,
     dialogue: DialogueState,
     cmd: KbCommand,
-    content_queue: RequestQueue<UserRequest, anyhow::Result<Content>>,
+    content_queue: KeyedBufferedQueue<u64, UserSession, anyhow::Result<Content>>,
+    session: UserSession,
 ) -> HandlerResult {
     match cmd {
         KbCommand::Get => {
-            let mut content = content_queue.request(UserRequest).await??;
+            let mut content = content_queue.request(session.user_id, session).await??;
 
             let image = content.image();
 

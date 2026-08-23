@@ -2,6 +2,7 @@ mod commands;
 mod content;
 mod controls;
 mod macros;
+mod session;
 mod state;
 mod text;
 
@@ -14,7 +15,9 @@ use content::{WorkerPoolConfig, content_queue, spawn_producer};
 use controls::handle_keyboard_callback;
 use controls::kb_command::UpdateKbExt;
 use flume::Receiver;
+use session::{SessionManager, UserSession};
 use state::State;
+use teloxide::types::User;
 use text::WordGenerator;
 use text::{Morpher, TextComposer};
 
@@ -31,6 +34,7 @@ use teloxide::{
 struct AppState {
     pub composer: TextComposer,
     pub client: Client,
+    pub session_manager: SessionManager,
 }
 
 #[tokio::main]
@@ -59,11 +63,21 @@ async fn main() -> anyhow::Result<()> {
     let word_generator = WordGenerator::new("words.db").await?;
     let composer = TextComposer::new(morpher, word_generator);
 
-    let app_state = AppState { composer, client };
+    let session_manager = SessionManager::new("app.db").await?;
+
+    let app_state = AppState {
+        composer,
+        client,
+        session_manager,
+    };
 
     let content_queue = content_queue(app_state.clone()).await;
 
     let handler = dialogue::enter::<Update, InMemStorage<State>, State, _>()
+        .filter_map(|update: Update| update.from().map(|u| u.id))
+        .filter_map_async(|user_id: UserId, app_state: AppState| async move {
+            app_state.session_manager.get_session(user_id.0).await.ok()
+        })
         .branch(
             Update::filter_message()
                 .filter_command::<Command>()

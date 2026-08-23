@@ -31,6 +31,3 @@ impl Content {
         self.image_text.to_string()
     }
 }
-
-#[derive(Clone)]
-pub struct UserRequest;
