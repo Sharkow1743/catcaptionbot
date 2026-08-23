@@ -21,6 +21,7 @@ use tokio::task::spawn_blocking;
 pub use types::Content;
 
 mod image;
+mod modifier;
 mod queue;
 pub mod rarity;
 mod types;

@@ -10,9 +10,9 @@ use teloxide::types::{KeyboardButton, KeyboardMarkup, Message};
 
 use crate::content::rarity::RarityManager;
 use crate::content::{Content, KeyedBufferedQueue, RequestQueue};
-use crate::session::UserSession;
+use crate::session::{UserSession, unix_timestamp};
 use crate::text::WordSpec;
-use crate::{AppState, session};
+use crate::{AppState, emit, session};
 
 use super::reply_kb;
 use super::state::DialogueState;
@@ -42,11 +42,16 @@ pub async fn handle_keyboard_callback(
     dialogue: DialogueState,
     cmd: KbCommand,
     content_queue: KeyedBufferedQueue<u64, UserSession, anyhow::Result<Content>>,
-    session: UserSession,
+    mut session: UserSession,
+    app_state: AppState,
 ) -> HandlerResult {
     match cmd {
         KbCommand::Get => {
-            let mut content = content_queue.request(session.user_id, session).await??;
+            // emit!("pre_roll", &mut session).await;
+
+            let mut content = content_queue
+                .request(session.user_id, session.clone())
+                .await??;
 
             let image = content.image();
 
@@ -62,6 +67,11 @@ pub async fn handle_keyboard_callback(
             }?;
 
             image.set_file_id(img_id);
+
+            session.last_roll = unix_timestamp();
+
+            // emit!("post_roll", &mut session).await;
+            app_state.session_manager.save_session(&session).await?;
         }
     }
 
