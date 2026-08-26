@@ -82,6 +82,9 @@ async fn cache_bytes(bytes: Bytes) {
 
 async fn load_random_cached() -> anyhow::Result<Bytes> {
     let cache_dir = Path::new("./.image_cache");
+    if !cache_dir.exists() {
+        fs::create_dir_all(cache_dir).await?;
+    }
     let mut entries = fs::read_dir(cache_dir).await?;
 
     let mut files = Vec::new();
@@ -91,6 +94,7 @@ async fn load_random_cached() -> anyhow::Result<Bytes> {
             files.push(path);
         }
     }
+
 
     if files.is_empty() {
         log::error!("Fallback image cache is empty, no image can be served");

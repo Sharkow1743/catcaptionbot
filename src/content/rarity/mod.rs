@@ -2,7 +2,6 @@ mod rarities;
 use crate::text::{Pos, WordSpec};
 use rand::distr::weighted::WeightedIndex;
 use rand::prelude::*;
-pub use rarities::*;
 use skia_rs_core::Color;
 use skia_rs_paint::ImageFilterRef;
 use std::sync::{Arc, OnceLock};
@@ -23,6 +22,7 @@ pub trait Rarity: Send + Sync {
             WordSpec::new().poses(&[Pos::Noun]),
         ]
     }
+    #[allow(dead_code)]
     fn template_failable(&self) -> anyhow::Result<Vec<WordSpec>> {
         Ok(self.template())
     }
@@ -49,14 +49,14 @@ macro_rules! rarity_struct {
     ($vis:vis $Name:ident, id = $id:literal, name = $name:literal $(, $($rest:tt)*)?) => {
         $vis struct $Name;
 
-        impl $crate::rarity::Rarity for $Name {
+        impl $crate::content::rarity::Rarity for $Name {
             fn id(&self) -> String { $id.to_string() }
             fn name(&self) -> String { $name.to_string() }
             $($($rest)*)?
         }
 
-        $crate::rarity::inventory::submit! {
-            $crate::rarity::RarityRegistration(|| std::sync::Arc::new($Name))
+        $crate::content::rarity::inventory::submit! {
+            $crate::content::rarity::RarityRegistration(|| std::sync::Arc::new($Name))
         }
     };
 }
@@ -82,10 +82,12 @@ impl RarityManager {
         }
     }
 
+    #[allow(dead_code)]
     pub fn add_rarity(&mut self, rarity: impl Rarity + 'static) {
         self.rarities.push(Arc::new(rarity));
     }
 
+    #[allow(dead_code)]
     pub fn extend<T>(mut self, rarities: T) -> Self
     where
         T: IntoIterator,
@@ -128,6 +130,31 @@ impl RarityManager {
         let dist = WeightedIndex::new(weights).ok()?;
         Some(self.rarities[dist.sample(&mut rand::rng())].clone())
     }
+
+    pub fn pick_for_session(
+        &self,
+        session: &crate::session::UserSession,
+    ) -> Option<Arc<dyn Rarity>> {
+        let mut weights_map: std::collections::HashMap<String, f32> =
+            self.rarities.iter().map(|r| (r.id(), r.weight())).collect();
+
+        session.fire_hook("rarity_weights", &mut weights_map);
+
+        let weights: Vec<f32> = self
+            .rarities
+            .iter()
+            .map(|r| {
+                weights_map
+                    .get(&r.id())
+                    .copied()
+                    .unwrap_or(r.weight())
+                    .max(0.0001)
+            })
+            .collect();
+
+        let dist = WeightedIndex::new(weights).ok()?;
+        Some(self.rarities[dist.sample(&mut rand::rng())].clone())
+    }
 }
 
 pub struct SimpleRarity {
@@ -154,10 +181,12 @@ impl SimpleRarity {
             text_color: Color::WHITE,
         }
     }
+    #[allow(dead_code)]
     pub fn secret(mut self, v: bool) -> Self {
         self.is_secret = v;
         self
     }
+
     pub fn weight(mut self, w: f32) -> Self {
         self.weight = w;
         self
@@ -204,5 +233,43 @@ impl Rarity for SimpleRarity {
     }
     fn text_color(&self) -> Color {
         self.text_color
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rarity_manager_weights_and_picking() {
+        let mut mgr = RarityManager::new();
+        mgr.add_rarity(SimpleRarity::new("Common", "common").weight(7.0));
+        mgr.add_rarity(SimpleRarity::new("Rare", "rare").weight(3.0));
+
+        assert_eq!(mgr.total_weight(), 10.0);
+        let common = SimpleRarity::new("Common", "common").weight(7.0);
+        assert!((mgr.rarity_percentage(&common) - 70.0).abs() < f32::EPSILON);
+
+        let picked = mgr.pick();
+        assert!(picked.is_some());
+    }
+
+    #[test]
+    fn test_global_registry_populated() {
+        let global = RarityManager::global();
+        assert!(global.total_weight() > 0.0);
+        assert!(global.pick().is_some());
+    }
+
+    #[test]
+    fn test_pick_for_session_with_modifiers() {
+        let mut session = crate::session::UserSession::default();
+        // Fire rolls to build up adrenaline
+        session.fire_trigger("on_roll");
+        session.fire_trigger("on_roll");
+
+        let global = RarityManager::global();
+        let picked = global.pick_for_session(&session);
+        assert!(picked.is_some());
     }
 }

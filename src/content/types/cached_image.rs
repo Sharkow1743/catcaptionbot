@@ -1,4 +1,3 @@
-use std::sync::{Arc, OnceLock};
 use teloxide::types::{FileId, InputFile};
 
 #[derive(Debug, Clone)]

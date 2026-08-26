@@ -132,6 +132,7 @@ impl WordGenerator {
     // ========================================================================
 
     /// Direct point-lookup by rowid avoiding virtual-table JOIN stalls
+    #[allow(dead_code)]
     pub async fn find_vector_in_db(
         &self,
         word: impl AsRef<str>,
@@ -161,6 +162,7 @@ impl WordGenerator {
         Ok(None)
     }
 
+    #[allow(dead_code)]
     pub async fn get_or_create_embedding(&self, text: impl AsRef<str>) -> anyhow::Result<Vec<f32>> {
         let text_ref = text.as_ref();
         let trimmed = text_ref.trim().to_lowercase();
@@ -197,10 +199,12 @@ impl WordGenerator {
     // MAIN PUBLIC QUERY FUNCTIONS
     // ========================================================================
 
+    #[allow(dead_code)]
     pub async fn get_random_words(&self, count: usize) -> anyhow::Result<Vec<String>> {
         self.get_random_words_by_pos(&[], count).await
     }
 
+    #[allow(dead_code)]
     pub async fn get_random_words_by_pos(
         &self,
         poses: impl AsRef<[Pos]>,
@@ -210,6 +214,7 @@ impl WordGenerator {
         Ok(weighted_sample_without_replacement(&candidates, count))
     }
 
+    #[allow(dead_code)]
     pub async fn get_random_words_by_similarity(
         &self,
         target_vec: impl AsRef<[f32]>,
@@ -220,6 +225,7 @@ impl WordGenerator {
             .await
     }
 
+    #[allow(dead_code)]
     pub async fn get_random_words_by_pos_and_similarity(
         &self,
         poses: impl AsRef<[Pos]>,
@@ -297,6 +303,7 @@ impl WordGenerator {
         Ok(result)
     }
 
+    #[allow(dead_code)]
     pub async fn get_random_words_by_pos_and_similarity_str(
         &self,
         poses: impl AsRef<[Pos]>,
@@ -441,6 +448,7 @@ fn weighted_sample_without_replacement(candidates: &[WordCandidate], count: usiz
     result
 }
 
+#[allow(dead_code)]
 pub fn encode_embedding(v: &[f32]) -> String {
     let mut bytes = Vec::with_capacity(v.len() * 4);
     for f in v {
@@ -460,6 +468,7 @@ pub fn decode_embedding_str(s: impl AsRef<str>) -> anyhow::Result<Vec<f32>> {
     Ok(bytes_to_f32_vec(&bytes))
 }
 
+#[allow(dead_code)]
 pub fn encode_embedding_q8(v: &[f32]) -> String {
     let max_abs = v.iter().fold(0.0f32, |acc, x| acc.max(x.abs()));
     let scale = if max_abs > 0.0 { max_abs / 127.0 } else { 1.0 };

@@ -731,9 +731,7 @@ impl Morpher {
                     } else if tok.governed_case == Some(Case::Genitive)
                         && tok.original == "кондитерски"
                     {
-                        InflectionJob::AdverbGoverned {
-                            word: tok.original.clone(),
-                        }
+                        InflectionJob::AdverbGoverned
                     } else {
                         InflectionJob::Literal(tok.original.clone())
                     }
@@ -786,7 +784,7 @@ impl Morpher {
                 InflectionJob::Adjective { word, req } => self.inflect(&word, &req).await,
                 InflectionJob::AdjectiveAsAdverb { word } => self.inflect(&word, &["ADVB"]).await,
                 InflectionJob::Verb { word, req } => self.inflect(&word, &req).await,
-                InflectionJob::AdverbGoverned { word: _ } => "кондитера".to_string(),
+                InflectionJob::AdverbGoverned => "кондитера".to_string(),
                 InflectionJob::Literal(w) => w,
                 InflectionJob::Noun { word, req } => self.inflect(&word, &req).await,
             };
@@ -814,12 +812,43 @@ enum InflectionJob {
         word: String,
         req: Vec<&'static str>,
     },
-    AdverbGoverned {
-        word: String,
-    },
+    AdverbGoverned,
     Literal(String),
     Noun {
         word: String,
         req: Vec<&'static str>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_derive_adverb() {
+        assert_eq!(Morpher::derive_adverb("быстрый"), "быстро");
+        assert_eq!(Morpher::derive_adverb("мистический"), "мистически");
+        assert_eq!(Morpher::derive_adverb("дружеский"), "дружески");
+    }
+
+    #[test]
+    fn test_derive_deverbal_noun_pure() {
+        assert_eq!(Morpher::derive_deverbal_noun_pure("бегать"), "бегание");
+        assert_eq!(Morpher::derive_deverbal_noun_pure("любить"), "любение");
+        assert_eq!(Morpher::derive_deverbal_noun_pure("кусаться"), "кусание");
+    }
+
+    #[test]
+    fn test_analyze_by_heuristics() {
+        let adj_masc = Morpher::analyze_by_heuristics("красивый");
+        assert_eq!(adj_masc.pos, Pos::Adj);
+        assert_eq!(adj_masc.gender, Gender::Masculine);
+
+        let adj_femn = Morpher::analyze_by_heuristics("красивая");
+        assert_eq!(adj_femn.pos, Pos::Adj);
+        assert_eq!(adj_femn.gender, Gender::Feminine);
+
+        let verb = Morpher::analyze_by_heuristics("бежать");
+        assert_eq!(verb.pos, Pos::Verb);
+    }
 }

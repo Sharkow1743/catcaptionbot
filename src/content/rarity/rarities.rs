@@ -1,8 +1,8 @@
 use skia_rs_core::Color;
 
-use super::{Rarity, SimpleRarity};
+use super::SimpleRarity;
 use crate::register_rarity;
-use crate::text::{Pos, TextComposer, WordSpec};
+use crate::text::WordSpec;
 
 // Auto-registers this into RarityManager::global() — no need to list it
 // anywhere else.

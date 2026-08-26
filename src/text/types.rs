@@ -21,6 +21,7 @@ pub enum Pos {
 }
 
 impl Pos {
+    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             Pos::Noun => "NOUN",
@@ -81,6 +82,7 @@ pub enum Number {
 }
 
 impl Number {
+    #[allow(dead_code)]
     pub fn as_grammeme(&self) -> &'static str {
         match self {
             Number::Singular => "sing",
@@ -112,6 +114,7 @@ impl Case {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct WordAnalysis {
     pub original: String,
@@ -156,24 +159,28 @@ impl WordSpec {
     }
 
     /// Rank candidates by similarity to a precomputed vector
+    #[allow(dead_code)]
     pub fn similar_to(mut self, target_vec: impl Into<Vec<f32>>) -> Self {
         self.target_vec = Some(target_vec.into());
         self
     }
 
     /// Cap the candidate pool before weighted sampling
+    #[allow(dead_code)]
     pub fn top_k(mut self, k: usize) -> Self {
         self.top_k = Some(k);
         self
     }
 
     /// Require at least this cosine similarity
+    #[allow(dead_code)]
     pub fn min_similarity(mut self, min_sim: f32) -> Self {
         self.min_similarity = Some(min_sim);
         self
     }
 
     /// Use a literal word instead of sampling one (still harmonized in context)
+    #[allow(dead_code)]
     pub fn fixed(word: impl Into<String>) -> Self {
         Self {
             fixed_word: Some(word.into()),
@@ -182,11 +189,13 @@ impl WordSpec {
     }
 
     /// Never pick these specific words for this slot
+    #[allow(dead_code)]
     pub fn exclude(mut self, words: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.exclude = Some(words.into_iter().map(Into::into).collect());
         self
     }
 
+    #[allow(dead_code)]
     pub fn similar_to_str(mut self, encoded: impl Into<String>) -> Self {
         self.target_vec_str = Some(encoded.into());
         self
@@ -195,5 +204,45 @@ impl WordSpec {
     pub fn similar_to_q8_str(mut self, encoded: impl Into<String>) -> Self {
         self.target_vec_q8_str = Some(encoded.into());
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_grammemes_and_tags() {
+        assert_eq!(Pos::Noun.to_opencorpora_tag(), "NOUN");
+        assert_eq!(Pos::Adj.to_opencorpora_tag(), "ADJF");
+        assert_eq!(Pos::Verb.to_opencorpora_tag(), "VERB");
+
+        assert_eq!(Gender::Masculine.as_grammeme(), "masc");
+        assert_eq!(Gender::Feminine.as_grammeme(), "femn");
+        assert_eq!(Gender::Neuter.as_grammeme(), "neut");
+
+        assert_eq!(Number::Singular.as_grammeme(), "sing");
+        assert_eq!(Number::Plural.as_grammeme(), "plur");
+
+        assert_eq!(Case::Nominative.as_grammeme(), "nomn");
+        assert_eq!(Case::Genitive.as_grammeme(), "gent");
+        assert_eq!(Case::Dative.as_grammeme(), "datv");
+    }
+
+    #[test]
+    fn test_word_spec_builder() {
+        let spec = WordSpec::new()
+            .poses(&[Pos::Adj, Pos::Noun])
+            .top_k(10)
+            .min_similarity(0.5)
+            .exclude(vec!["cat", "dog"]);
+
+        assert_eq!(spec.poses.unwrap(), vec![Pos::Adj, Pos::Noun]);
+        assert_eq!(spec.top_k, Some(10));
+        assert_eq!(spec.min_similarity, Some(0.5));
+        assert_eq!(
+            spec.exclude.unwrap(),
+            vec!["cat".to_string(), "dog".to_string()]
+        );
     }
 }

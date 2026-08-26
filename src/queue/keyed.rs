@@ -34,6 +34,7 @@ impl KeyedBufferConfig {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_cleanup_interval(mut self, interval: Duration) -> Self {
         self.cleanup_interval = interval;
         self
@@ -84,6 +85,7 @@ where
             .map_err(|_| RequestError::WorkerDropped)
     }
 
+    #[allow(dead_code)]
     pub async fn request_timeout(
         &self,
         key: Key,
@@ -173,5 +175,35 @@ where
     KeyedBufferedQueue {
         sessions,
         spawn_worker,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_keyed_buffered_queue_flow() {
+        let (dep_tx, dep_rx) = bounded::<i32>(10);
+        for i in 1..=5 {
+            dep_tx.send_async(i).await.unwrap();
+        }
+
+        let state = Arc::new(());
+        let config = KeyedBufferConfig::new(2, Duration::from_secs(10));
+
+        let queue: KeyedBufferedQueue<u64, String, String> = spawn_keyed_buffered_queue(
+            state,
+            dep_rx,
+            config,
+            |input: String, dep: i32, _| async move { format!("{}-{}", input, dep) },
+        );
+
+        let res1 = queue.request(1, "hello".to_string()).await.unwrap();
+        assert_eq!(res1, "hello-1");
+
+        let res2 = queue.request(1, "world".to_string()).await.unwrap();
+        // Since input channel was updated, next generated item uses latest input
+        assert!(res2.starts_with("hello-") || res2.starts_with("world-"));
     }
 }

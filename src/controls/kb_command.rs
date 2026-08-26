@@ -1,4 +1,3 @@
-use std::fmt;
 use std::str::FromStr;
 
 use strum::{Display, EnumIter, EnumString};
@@ -21,11 +20,13 @@ impl KbCommand {
         Self::iter().find(|cmd| cmd.to_string() == text)
     }
 
+    #[allow(dead_code)]
     pub fn from_id(id: &str) -> Option<Self> {
         <Self as FromStr>::from_str(id).ok()
     }
 
     /// Take `Message` by value instead of `&Message`
+    #[allow(dead_code)]
     pub fn extract_from_message(msg: Message) -> Option<Self> {
         msg.text().and_then(Self::from_display_text)
     }

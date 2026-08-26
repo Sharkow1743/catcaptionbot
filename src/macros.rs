@@ -11,10 +11,10 @@ macro_rules! maybe_kb {
 #[macro_export]
 macro_rules! inline_kb {
     ($([$($text:expr => $data:expr),+ $(,)?]),+ $(,)?) => {
-        InlineKeyboardMarkup::new(vec![
+        teloxide::types::InlineKeyboardMarkup::new(vec![
             $(
                 vec![
-                    $(InlineKeyboardButton::callback($text, $data)),+
+                    $(teloxide::types::InlineKeyboardButton::callback($text, $data)),+
                 ]
             ),+
         ])
@@ -25,10 +25,10 @@ macro_rules! inline_kb {
 macro_rules! reply_kb {
     // Matches rows of [ "Button Text", ... ]
     ($([$($text:expr),+ $(,)?]),+ $(,)?) => {
-        KeyboardMarkup::new(vec![
+        teloxide::types::KeyboardMarkup::new(vec![
             $(
                 vec![
-                    $(KeyboardButton::new($text)),+
+                    $(teloxide::types::KeyboardButton::new($text)),+
                 ]
             ),+
         ])

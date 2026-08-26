@@ -1,11 +1,9 @@
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
-use super::super::Rarity;
-use crate::content::rarity::RarityManager;
+use crate::content::rarity::{Rarity, RarityManager};
 use crate::content::types::CachedImage;
-use crate::session::UserSession;
-use crate::{emit_collect, stats};
+use crate::stats;
 
 use bytes::Bytes;
 use skia_rs_canvas::{Canvas, Surface};

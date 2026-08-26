@@ -1,13 +1,12 @@
 mod commands;
-mod content;
+pub mod content;
 mod controls;
-mod event;
 mod logger;
 mod macros;
-mod queue;
-mod session;
-mod state;
-mod text;
+pub mod queue;
+pub mod session;
+pub mod state;
+pub mod text;
 
 use std::time::Duration;
 
@@ -16,25 +15,17 @@ use content::content_queue;
 use controls::handle_keyboard_callback;
 use controls::kb_command::UpdateKbExt;
 use session::SessionManager;
-use state::State;
+use state::{AppState, Config, State};
 use text::WordGenerator;
 use text::{Morpher, TextComposer};
 
 use libsqlite3_sys::sqlite3_auto_extension;
-use reqwest::Client;
 use sqlite_vec::sqlite3_vec_init;
 use teloxide::{
     dispatching::dialogue::{self, InMemStorage},
     dptree::deps,
     prelude::*,
 };
-
-#[derive(Clone)]
-struct AppState {
-    pub composer: TextComposer,
-    pub client: Client,
-    pub session_manager: SessionManager,
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -49,29 +40,31 @@ async fn main() -> anyhow::Result<()> {
         sqlite3_auto_extension(Some(std::mem::transmute(sqlite3_vec_init as *const ())));
     }
 
-    dotenvy::dotenv().ok();
+    let config = Config::from_env();
 
-    let proxy_url =
-        std::env::var("TELOXIDE_PROXY").unwrap_or_else(|_| "socks5h://127.0.0.1:8086".to_string());
+    let mut client_builder = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(config.connect_timeout_secs))
+        .pool_max_idle_per_host(usize::MAX);
 
-    let client = reqwest::Client::builder()
-        .proxy(reqwest::Proxy::all(&proxy_url)?)
-        .connect_timeout(Duration::from_secs(30))
-        .pool_max_idle_per_host(usize::MAX)
-        .build()?;
+    if let Some(ref proxy_url) = config.proxy_url {
+        client_builder = client_builder.proxy(reqwest::Proxy::all(proxy_url)?);
+    }
 
+    let client = client_builder.build()?;
     let bot = Bot::from_env_with_client(client.clone());
 
-    let morpher = Morpher::new("morphology.db").await?;
-    let word_generator = WordGenerator::new("words.db").await?;
+    let morpher = Morpher::new(&config.morphology_db_path).await?;
+    let word_generator =
+        WordGenerator::new_with_local_model(&config.words_db_path, &config.model_dir).await?;
     let composer = TextComposer::new(morpher, word_generator);
 
-    let session_manager = SessionManager::new("app.db").await?;
+    let session_manager = SessionManager::new(&config.app_db_path).await?;
 
     let app_state = AppState {
         composer,
         client,
         session_manager,
+        config,
     };
 
     let content_queue = content_queue(app_state.clone()).await;

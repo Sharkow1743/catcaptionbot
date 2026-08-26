@@ -16,16 +16,12 @@ pub async fn handle_start(
     bot: Bot,
     msg: Message,
     dialogue: DialogueState,
-    start: String,
+    _start: String,
 ) -> HandlerResult {
-    if start.is_empty() {
-        dialogue.reset().await?;
-        let kb = dialogue.get_or_default().await?.keyboard();
-        maybe_kb!(bot.send_message(msg.chat.id, "[START MESSAGE]"), kb).await?;
-    } else {
-        let kb = dialogue.get_or_default().await?.keyboard();
-        maybe_kb!(bot.send_message(msg.chat.id, "[START MESSAGE]"), kb).await?;
-    }
+    dialogue.reset().await?;
+    let kb = dialogue.get_or_default().await?.keyboard();
+    let welcome = "🐱 Привет! Нажми «Получить», чтобы сгенерировать кота.";
+    maybe_kb!(bot.send_message(msg.chat.id, welcome), kb).await?;
     Ok(())
 }
 

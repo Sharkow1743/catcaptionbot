@@ -84,3 +84,28 @@ impl ComputeLimiter {
         (bg, total)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_compute_limiter_permits() {
+        let limiter = ComputeLimiter::with_limits(2, 1);
+
+        // Foreground permit
+        let permit1 = limiter.acquire_foreground().await;
+        assert_eq!(limiter.total_semaphore.available_permits(), 1);
+
+        // Background permit
+        let permit2 = limiter.acquire_background().await;
+        assert_eq!(limiter.total_semaphore.available_permits(), 0);
+        assert_eq!(limiter.bg_semaphore.available_permits(), 0);
+
+        drop(permit1);
+        drop(permit2);
+
+        assert_eq!(limiter.total_semaphore.available_permits(), 2);
+        assert_eq!(limiter.bg_semaphore.available_permits(), 1);
+    }
+}

@@ -21,6 +21,7 @@ pub async fn generate_and_harmonize(
 
 /// Like `generate_and_harmonize`, but joins the final words with a custom separator
 /// instead of morpher's default single-space join.
+#[allow(dead_code)]
 pub async fn generate_and_harmonize_with_separator(
     generator: &WordGenerator,
     morpher: &Morpher,
@@ -36,6 +37,7 @@ pub async fn generate_and_harmonize_with_separator(
 
 /// Runs a template and returns the raw sampled words without grammatical harmonization —
 /// useful for debugging a template or feeding words into custom logic.
+#[allow(dead_code)]
 pub async fn generate_words(
     generator: &WordGenerator,
     template: impl AsRef<[WordSpec]>,
@@ -47,6 +49,7 @@ pub async fn generate_words(
 
 /// Harmonizes an arbitrary, already-known list of words (skips generation entirely).
 /// Handy for mixing user-supplied words with generated ones downstream.
+#[allow(dead_code)]
 pub async fn harmonize_words(
     morpher: &Morpher,
     words: impl IntoIterator<Item = impl AsRef<str>>,
@@ -57,6 +60,7 @@ pub async fn harmonize_words(
 
 /// Computes or fetches vector embedding for `target_text`, picks `count` similar words matching `poses`,
 /// and grammatically harmonizes them.
+#[allow(dead_code)]
 pub async fn generate_harmonized_phrase_by_similarity(
     generator: &WordGenerator,
     morpher: &Morpher,
@@ -76,6 +80,7 @@ pub async fn generate_harmonized_phrase_by_similarity(
 
 /// Same as `generate_harmonized_phrase_by_similarity` but caps the candidate pool to `top_k`
 /// closest matches before weighted sampling — gives tighter thematic control.
+#[allow(dead_code)]
 pub async fn generate_harmonized_phrase_by_similarity_top_k(
     generator: &WordGenerator,
     morpher: &Morpher,
@@ -95,6 +100,7 @@ pub async fn generate_harmonized_phrase_by_similarity_top_k(
 }
 
 /// Runs the same template `n` times, producing `n` independent harmonized phrases.
+#[allow(dead_code)]
 pub async fn generate_many_phrases(
     generator: &WordGenerator,
     morpher: &Morpher,
@@ -112,6 +118,7 @@ pub async fn generate_many_phrases(
 
 /// Tries a template, and falls back to `fallback` if generation yields no words at all
 /// (e.g. an over-constrained template with no DB matches).
+#[allow(dead_code)]
 pub async fn generate_and_harmonize_or(
     generator: &WordGenerator,
     morpher: &Morpher,
@@ -153,6 +160,7 @@ impl TextComposer {
     }
 
     /// Same, with a custom word separator in the output.
+    #[allow(dead_code)]
     pub async fn generate_and_harmonize_with_separator(
         &self,
         template: impl AsRef<[WordSpec]>,
@@ -163,6 +171,7 @@ impl TextComposer {
     }
 
     /// Raw sampled words for a template, no harmonization.
+    #[allow(dead_code)]
     pub async fn generate_words(
         &self,
         template: impl AsRef<[WordSpec]>,
@@ -171,6 +180,7 @@ impl TextComposer {
     }
 
     /// Harmonize a caller-supplied list of words directly.
+    #[allow(dead_code)]
     pub async fn harmonize_words(
         &self,
         words: impl IntoIterator<Item = impl AsRef<str>>,
@@ -179,6 +189,7 @@ impl TextComposer {
     }
 
     /// Generates N semantically similar words relative to `target_text` and harmonizes them.
+    #[allow(dead_code)]
     pub async fn generate_harmonized_phrase_by_similarity(
         &self,
         poses: impl AsRef<[Pos]>,
@@ -196,6 +207,7 @@ impl TextComposer {
     }
 
     /// Same, capped to the top-K closest candidates before sampling.
+    #[allow(dead_code)]
     pub async fn generate_harmonized_phrase_by_similarity_top_k(
         &self,
         poses: impl AsRef<[Pos]>,
@@ -215,6 +227,7 @@ impl TextComposer {
     }
 
     /// Produce `n` independent phrases from the same template.
+    #[allow(dead_code)]
     pub async fn generate_many_phrases(
         &self,
         template: impl AsRef<[WordSpec]>,
@@ -224,6 +237,7 @@ impl TextComposer {
     }
 
     /// Template with a fallback string if nothing matched.
+    #[allow(dead_code)]
     pub async fn generate_and_harmonize_or(
         &self,
         template: impl AsRef<[WordSpec]>,

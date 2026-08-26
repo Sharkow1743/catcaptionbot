@@ -1,5 +1,5 @@
-mod modifiers {
-    mod adrenaline;
+pub mod modifiers {
+    pub mod adrenaline;
 }
 
 use crate::session::UserSession;
@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
 pub use inventory;
-pub use modifiers::*;
+pub use modifiers::adrenaline::*;
 
 // -----------------------------------------------------------------------------
 // HookArg Helper

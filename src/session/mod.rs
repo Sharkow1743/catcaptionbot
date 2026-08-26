@@ -37,6 +37,7 @@ impl UserSession {
         }
     }
 
+    #[allow(dead_code)]
     pub fn fire_hook<T: 'static>(&self, name: &str, value: &mut T) {
         let registry = ModifierRegistry::global();
         if !registry.known_hooks.contains(name) {
@@ -62,11 +63,25 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub async fn new(database_path: &str) -> Result<Self, sqlx::Error> {
-        let options = SqliteConnectOptions::new()
-            .filename(database_path)
-            .create_if_missing(true);
-
-        let pool = SqlitePool::connect_with(options).await?;
+        let pool = if database_path == ":memory:" {
+            let options = SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true);
+            sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(options)
+                .await?
+        } else {
+            let options = SqliteConnectOptions::new()
+                .filename(database_path)
+                .create_if_missing(true)
+                .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
+            sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(10)
+                .connect_with(options)
+                .await?
+        };
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS sessions (
@@ -113,6 +128,7 @@ impl SessionManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn mutate_session<F, R>(&self, user_id: u64, f: F) -> Result<R, sqlx::Error>
     where
         F: FnOnce(&mut UserSession) -> R,
@@ -123,6 +139,7 @@ impl SessionManager {
         Ok(result)
     }
 
+    #[allow(dead_code)]
     pub async fn fire_trigger(&self, user_id: u64, name: &str) -> Result<(), sqlx::Error> {
         let mut session = self.get_session(user_id).await?;
         session.fire_trigger(name);
@@ -130,6 +147,7 @@ impl SessionManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn fire_hook<T: Default + 'static>(
         &self,
         user_id: u64,
@@ -139,5 +157,54 @@ impl SessionManager {
         let mut value = T::default();
         session.fire_hook(name, &mut value);
         Ok(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_user_session_triggers_adrenaline() {
+        let mut session = UserSession {
+            user_id: 12345,
+            ..Default::default()
+        };
+
+        assert!(!session.modifiers.is_active("adrenaline"));
+        assert_eq!(session.modifiers.display_active("|"), "");
+
+        session.fire_trigger("on_roll");
+        assert!(session.modifiers.is_active("adrenaline"));
+        assert_eq!(session.modifiers.display_active("|"), "⚡1");
+
+        session.fire_trigger("on_roll");
+        assert_eq!(session.modifiers.display_active("|"), "⚡2");
+
+        session.fire_trigger("on_catch");
+        assert_eq!(session.modifiers.display_active("|"), "⚡1");
+
+        session.fire_trigger("on_escape");
+        assert_eq!(session.modifiers.display_active("|"), "⚡1");
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_sqlite() {
+        let manager = SessionManager::new(":memory:").await.unwrap();
+
+        let session = manager.get_session(42).await.unwrap();
+        assert_eq!(session.user_id, 42);
+
+        manager
+            .mutate_session(42, |s| {
+                s.last_roll = 1000;
+                s.fire_trigger("on_roll");
+            })
+            .await
+            .unwrap();
+
+        let updated = manager.get_session(42).await.unwrap();
+        assert_eq!(updated.last_roll, 1000);
+        assert!(updated.modifiers.is_active("adrenaline"));
     }
 }

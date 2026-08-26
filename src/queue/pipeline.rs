@@ -72,11 +72,13 @@ impl WorkerPoolConfig {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_check_interval(mut self, interval: Duration) -> Self {
         self.check_interval = interval;
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_thresholds(mut self, scale_up: f32, scale_down: f32) -> Self {
         self.scale_up_threshold = scale_up;
         self.scale_down_threshold = scale_down;
@@ -111,6 +113,7 @@ pub enum RequestError {
     WorkerDropped,
     #[error("the request timed out")]
     Timeout,
+    #[allow(dead_code)]
     #[error("upstream dependency queue closed")]
     UpstreamClosed,
 }
@@ -145,6 +148,7 @@ impl<In: Send + 'static, Out: Send + 'static> RequestQueue<In, Out> {
         reply_rx.await.map_err(|_| RequestError::WorkerDropped)
     }
 
+    #[allow(dead_code)]
     pub async fn request_timeout(&self, input: In, timeout: Duration) -> Result<Out, RequestError> {
         tokio::time::timeout(timeout, self.request(input))
             .await
@@ -235,6 +239,7 @@ where
     rx
 }
 
+#[allow(dead_code)]
 pub fn spawn_consumer<S, In, F, Fut>(
     state: Arc<S>,
     rx: Receiver<In>,
@@ -390,6 +395,7 @@ where
     rx_out
 }
 
+#[allow(dead_code)]
 pub fn spawn_request_queue<S, In, Out, F, Fut>(
     state: Arc<S>,
     config: WorkerPoolConfig,
@@ -468,6 +474,7 @@ where
     RequestQueue { tx: req_tx }
 }
 
+#[allow(dead_code)]
 pub fn spawn_dependent_request_queue<S, In, Dep, Out, F, Fut>(
     state: Arc<S>,
     dep_rx: Receiver<Dep>,

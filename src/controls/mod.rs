@@ -1,16 +1,16 @@
 pub mod kb_command;
 
 use std::time::Instant;
-use std::vec;
 
 use kb_command::KbCommand;
 use teloxide::prelude::*;
-use teloxide::types::{KeyboardButton, KeyboardMarkup, Message};
+use teloxide::types::KeyboardMarkup;
 
 use crate::content::Content;
 use crate::queue::KeyedBufferedQueue;
-use crate::session::{UserSession, unix_timestamp};
-use crate::{AppState, stats};
+use crate::session::UserSession;
+use crate::state::AppState;
+use crate::stats;
 
 use super::reply_kb;
 use super::state::DialogueState;
@@ -36,7 +36,7 @@ impl State {
 pub async fn handle_keyboard_callback(
     msg: Message,
     bot: Bot,
-    dialogue: DialogueState,
+    _dialogue: DialogueState,
     cmd: KbCommand,
     content_queue: KeyedBufferedQueue<u64, UserSession, anyhow::Result<Content>>,
     mut session: UserSession,
@@ -58,17 +58,17 @@ pub async fn handle_keyboard_callback(
                 .send_photo(msg.chat.id, image.clone().into())
                 .await?
                 .photo()
-                && let Some(photo_meta) = photo_meta.get(0)
+                && let Some(first_photo) = photo_meta.first()
             {
                 stats!("Served content in {:?}", serve_time.elapsed());
-                Ok(photo_meta.clone().file.id)
+                Ok(first_photo.file.id.clone())
             } else {
                 Err(anyhow::anyhow!("Cannot get photo id"))
             }?;
 
             image.set_file_id(img_id);
 
-            session.last_roll = unix_timestamp();
+            session.last_roll = crate::session::unix_timestamp();
 
             app_state.session_manager.save_session(&session).await?;
         }

@@ -17,9 +17,11 @@ pub enum FilterLevel {
     Trace = 7,
 }
 
+#[allow(unused_imports, dead_code)]
 pub use FilterLevel::Detail as Stats;
 
 impl FilterLevel {
+    #[allow(dead_code)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().trim() {
             "off" => FilterLevel::Off,
@@ -128,6 +130,7 @@ impl LoggerBuilder {
         self
     }
 
+    #[allow(dead_code)]
     pub fn all(mut self, filter: FilterLevel) -> Self {
         self.app_filter = filter;
         self.external_filter = filter;
@@ -285,6 +288,7 @@ pub fn builder() -> LoggerBuilder {
     LoggerBuilder::new()
 }
 
+#[allow(dead_code)]
 pub fn init() {
     LoggerBuilder::new().init();
 }

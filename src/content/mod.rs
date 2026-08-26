@@ -9,12 +9,12 @@ use crate::queue::{
     ComputeLimiter, KeyedBufferConfig, KeyedBufferedQueue, WorkerPoolConfig, run_cpu,
     spawn_keyed_buffered_queue, spawn_producer, spawn_transformer,
 };
-use crate::session::{self, UserSession};
+use crate::session::UserSession;
+use crate::state::AppState;
+use crate::stats;
 use crate::text::TextComposer;
-use crate::{AppState, emit_collect, stats};
 use image::edit::{preprocess_image, process_image};
 use image::fetch_image;
-use modifier::ModifierRegistry;
 use rarity::{Rarity, RarityManager};
 
 pub use types::Content;
@@ -96,7 +96,7 @@ async fn process_content(
 
     let rarity_time = Instant::now();
     let rarity = RarityManager::global()
-        .pick()
+        .pick_for_session(&session)
         .ok_or_else(|| anyhow::anyhow!("Could not generate rarity"))?;
     let rarity_time = rarity_time.elapsed();
 
