@@ -1,15 +1,58 @@
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::{Pool, Sqlite, SqlitePool};
 
 mod utils;
-
 pub use utils::unix_timestamp;
+
+use crate::content::modifier::{HookArg, ModifierBag, ModifierRegistry, warn_once};
 
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct UserSession {
     pub user_id: u64,
     pub last_roll: i64,
+    pub modifiers: ModifierBag,
+}
+
+impl UserSession {
+    pub fn fire_trigger(&mut self, name: &str) {
+        let registry = ModifierRegistry::global();
+        if !registry.known_triggers.contains(name) {
+            warn_once("trigger", name);
+        }
+
+        for def in registry.all() {
+            if def.triggers.contains(&name) {
+                let mut json_val = self
+                    .modifiers
+                    .entries
+                    .get(def.id)
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+
+                (def.dispatch_trigger)(name, &mut json_val, self);
+
+                self.modifiers.entries.insert(def.id.to_string(), json_val);
+            }
+        }
+    }
+
+    pub fn fire_hook<T: 'static>(&self, name: &str, value: &mut T) {
+        let registry = ModifierRegistry::global();
+        if !registry.known_hooks.contains(name) {
+            warn_once("hook", name);
+        }
+
+        let mut hook_arg = HookArg { name, value };
+
+        for def in registry.all() {
+            if def.hooks.contains(&name) {
+                let default_json = serde_json::Value::Null;
+                let json_val = self.modifiers.entries.get(def.id).unwrap_or(&default_json);
+                (def.dispatch_hook)(json_val, self, &mut hook_arg);
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -25,7 +68,6 @@ impl SessionManager {
 
         let pool = SqlitePool::connect_with(options).await?;
 
-        // Initialize table
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS sessions (
                 user_id INTEGER PRIMARY KEY,
@@ -69,5 +111,33 @@ impl SessionManager {
         .await?;
 
         Ok(())
+    }
+
+    pub async fn mutate_session<F, R>(&self, user_id: u64, f: F) -> Result<R, sqlx::Error>
+    where
+        F: FnOnce(&mut UserSession) -> R,
+    {
+        let mut session = self.get_session(user_id).await?;
+        let result = f(&mut session);
+        self.save_session(&session).await?;
+        Ok(result)
+    }
+
+    pub async fn fire_trigger(&self, user_id: u64, name: &str) -> Result<(), sqlx::Error> {
+        let mut session = self.get_session(user_id).await?;
+        session.fire_trigger(name);
+        self.save_session(&session).await?;
+        Ok(())
+    }
+
+    pub async fn fire_hook<T: Default + 'static>(
+        &self,
+        user_id: u64,
+        name: &str,
+    ) -> Result<T, sqlx::Error> {
+        let session = self.get_session(user_id).await?;
+        let mut value = T::default();
+        session.fire_hook(name, &mut value);
+        Ok(value)
     }
 }

@@ -3,13 +3,14 @@ use std::time::{Duration, Instant};
 
 use self::rarity::Rarity;
 
-use crate::session::UserSession;
+use crate::session::{self, UserSession};
 use crate::text::TextComposer;
-use crate::{AppState, stats};
+use crate::{AppState, emit_collect, stats};
 use bytes::Bytes;
 use flume::Receiver;
 use image::edit::{preprocess_image, process_image};
 use image::fetch_image;
+use modifier::ModifierRegistry;
 pub use queue::{
     KeyedBufferConfig, KeyedBufferedQueue, RequestError, RequestQueue, WorkerPoolConfig,
     spawn_consumer, spawn_dependent_request_queue, spawn_keyed_buffered_queue, spawn_producer,
@@ -21,7 +22,7 @@ use tokio::task::spawn_blocking;
 pub use types::Content;
 
 mod image;
-mod modifier;
+pub mod modifier;
 mod queue;
 pub mod rarity;
 mod types;
@@ -74,10 +75,15 @@ pub async fn content_queue(
 }
 
 async fn process_content(
-    session: UserSession,
+    mut session: UserSession,
     image: Image,
     app_state: Arc<AppState>,
 ) -> anyhow::Result<Content> {
+    session.fire_trigger("on_generation_start");
+    let modifiers = session.modifiers.display_active("|");
+
+    app_state.session_manager.save_session(&session).await?;
+
     let rarity_time = Instant::now();
     let rarity = RarityManager::global()
         .pick()
@@ -92,7 +98,7 @@ async fn process_content(
     let image = {
         let rarity = rarity.clone();
         let text = text.clone();
-        spawn_blocking(move || process_image(rarity.as_ref(), image, text)).await??
+        spawn_blocking(move || process_image(rarity.as_ref(), image, text, modifiers)).await??
     };
     let image_time = image_time.elapsed();
 

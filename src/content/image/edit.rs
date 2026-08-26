@@ -4,7 +4,8 @@ use std::time::Instant;
 use super::super::Rarity;
 use crate::content::rarity::RarityManager;
 use crate::content::types::CachedImage;
-use crate::stats;
+use crate::session::UserSession;
+use crate::{emit_collect, stats};
 
 use bytes::Bytes;
 use skia_rs_canvas::{Canvas, Surface};
@@ -288,6 +289,7 @@ pub fn process_image(
     rarity: &dyn Rarity,
     image: Image,
     text: String,
+    modifiers: String,
 ) -> anyhow::Result<CachedImage> {
     let start = Instant::now();
     let (w, h) = image.dimensions();
@@ -310,7 +312,7 @@ pub fn process_image(
 
     // 1. Draw the bottom rarity banner
     let arial_tf = arial_typeface()?;
-    let badge_layout = bake_rarity_bar(&mut canvas, arial_tf, rarity, scale)?;
+    let badge_layout = bake_rarity_bar(&mut canvas, arial_tf, rarity, scale, modifiers)?;
 
     // 2. Draw the main Impact caption
     let impact_tf = impact_typeface()?;
@@ -346,11 +348,12 @@ pub fn bake_rarity_bar(
     typeface: Arc<Typeface>,
     rarity: &dyn Rarity,
     scale: f32,
+    modifiers: String,
 ) -> anyhow::Result<BadgeLayout> {
     let h_f = canvas.height() as f32;
 
     let percentage = RarityManager::global().rarity_percentage(rarity);
-    let label = format!("{} • {:.2}%", rarity.name(), percentage);
+    let label = format!("{} {:.2}% • {}", rarity.name(), percentage, modifiers);
 
     let font_size = RARITY_FONT_SIZE * scale;
     let pad_x = RARITY_PAD_X * scale;
