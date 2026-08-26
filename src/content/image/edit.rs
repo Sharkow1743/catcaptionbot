@@ -22,12 +22,12 @@ pub const IMAGE_WIDTH: f32 = 800.0;
 pub const SQUARE_FACTOR: f32 = 0.5;
 
 // --- Rarity Badge Settings ---
-pub const RARITY_FONT_SIZE: f32 = 30.0;
+pub const RARITY_FONT_SIZE: f32 = 37.0;
 pub const RARITY_PAD_X: f32 = 12.0;
-pub const RARITY_BADGE_HEIGHT: f32 = 42.0;
+pub const RARITY_BADGE_HEIGHT: f32 = 44.0;
 pub const RARITY_CORNER_RADIUS: f32 = 8.0;
 pub const RARITY_BOTTOM_MARGIN: f32 = 5.0;
-pub const RARITY_TEXT_Y_OFFSET: f32 = 30.0; // Distance from badge top to text baseline
+pub const RARITY_TEXT_Y_OFFSET: f32 = 35.0; // Distance from badge top to text baseline
 
 // --- Caption Text Settings ---
 pub const CAPTION_MAX_WIDTH: f32 = 720.0; // Horizontal boundary for caption text

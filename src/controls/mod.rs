@@ -3,23 +3,19 @@ pub mod kb_command;
 use std::time::Instant;
 use std::vec;
 
-use flume::Receiver;
 use kb_command::KbCommand;
-use reqwest::Client;
 use teloxide::prelude::*;
 use teloxide::types::{KeyboardButton, KeyboardMarkup, Message};
 
-use crate::content::rarity::RarityManager;
-use crate::content::{Content, KeyedBufferedQueue, RequestQueue};
+use crate::content::Content;
+use crate::queue::KeyedBufferedQueue;
 use crate::session::{UserSession, unix_timestamp};
-use crate::text::WordSpec;
-use crate::{AppState, emit, session, stats};
+use crate::{AppState, stats};
 
 use super::reply_kb;
 use super::state::DialogueState;
 use super::state::HandlerResult;
 use super::state::State;
-use super::text::{Morpher, Pos, TextComposer, WordGenerator};
 
 impl State {
     pub fn keyboard(&self) -> Option<KeyboardMarkup> {
@@ -48,7 +44,7 @@ pub async fn handle_keyboard_callback(
 ) -> HandlerResult {
     match cmd {
         KbCommand::Get => {
-            // emit!("pre_roll", &mut session).await;
+            session.fire_trigger("on_roll");
 
             let serve_time = Instant::now();
 
@@ -74,7 +70,6 @@ pub async fn handle_keyboard_callback(
 
             session.last_roll = unix_timestamp();
 
-            // emit!("post_roll", &mut session).await;
             app_state.session_manager.save_session(&session).await?;
         }
     }

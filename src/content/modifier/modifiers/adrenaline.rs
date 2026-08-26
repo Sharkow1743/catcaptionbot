@@ -10,7 +10,7 @@ pub struct Adrenaline {
 
 impl Modifier for Adrenaline {
     const ID: &'static str = "adrenaline";
-    const TRIGGERS: &'static [&'static str] = &["on_generation_start"];
+    const TRIGGERS: &'static [&'static str] = &["on_generation_start", "on_roll"];
     const HOOKS: &'static [&'static str] = &[];
 
     fn is_active(&self) -> bool {
@@ -24,7 +24,10 @@ impl Modifier for Adrenaline {
     fn on_trigger(&mut self, name: &str, _session: &mut crate::session::UserSession) {
         match name {
             "on_generation_start" => {
-                notice!("test!")
+                notice!("on_generation_start")
+            }
+            "on_roll" => {
+                notice!("on_roll")
             }
             _ => {}
         }

@@ -186,9 +186,7 @@ pub fn warn_once(kind: &str, name: &str) {
     static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     let warned = WARNED.get_or_init(|| Mutex::new(HashSet::new()));
     if warned.lock().unwrap().insert(format!("{kind}:{name}")) {
-        eprintln!(
-            "[modifier] warning: fired {kind} \"{name}\" but no registered modifier listens for it"
-        );
+        log::warn!("Fired {kind} \"{name}\" but no registered modifier listens for it");
     }
 }
 

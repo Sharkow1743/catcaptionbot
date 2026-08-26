@@ -4,22 +4,19 @@ mod controls;
 mod event;
 mod logger;
 mod macros;
+mod queue;
 mod session;
 mod state;
 mod text;
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use commands::{Command, handle_help, handle_start};
-use content::rarity::RarityManager;
-use content::{WorkerPoolConfig, content_queue, spawn_producer};
+use content::content_queue;
 use controls::handle_keyboard_callback;
 use controls::kb_command::UpdateKbExt;
-use flume::Receiver;
-use session::{SessionManager, UserSession};
+use session::SessionManager;
 use state::State;
-use teloxide::types::User;
 use text::WordGenerator;
 use text::{Morpher, TextComposer};
 
