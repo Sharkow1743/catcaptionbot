@@ -1,18 +1,24 @@
 use std::collections::HashMap;
 use std::future::Future;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use flume::{Receiver, bounded};
 use tokio::sync::watch;
 
-use super::pipeline::RequestError;
+use super::pipeline::{RequestError, WorkerGuard};
 
 #[derive(Debug, Clone)]
 pub struct KeyedBufferConfig {
     pub buffer_size: usize,
     pub idle_ttl: Duration,
     pub cleanup_interval: Duration,
+    pub min_workers: usize,
+    pub max_workers: usize,
+    pub check_interval: Duration,
+    pub scale_up_threshold: f32,
+    pub scale_down_threshold: f32,
 }
 
 impl Default for KeyedBufferConfig {
@@ -21,6 +27,11 @@ impl Default for KeyedBufferConfig {
             buffer_size: 2,
             idle_ttl: Duration::from_secs(60),
             cleanup_interval: Duration::from_secs(15),
+            min_workers: 1,
+            max_workers: 1,
+            check_interval: Duration::from_millis(250),
+            scale_up_threshold: 0.75,
+            scale_down_threshold: 0.25,
         }
     }
 }
@@ -37,6 +48,26 @@ impl KeyedBufferConfig {
     #[allow(dead_code)]
     pub fn with_cleanup_interval(mut self, interval: Duration) -> Self {
         self.cleanup_interval = interval;
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn with_workers(mut self, min_workers: usize, max_workers: usize) -> Self {
+        self.min_workers = min_workers.max(1);
+        self.max_workers = max_workers.max(self.min_workers);
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn with_check_interval(mut self, interval: Duration) -> Self {
+        self.check_interval = interval;
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn with_thresholds(mut self, scale_up: f32, scale_down: f32) -> Self {
+        self.scale_up_threshold = scale_up;
+        self.scale_down_threshold = scale_down;
         self
     }
 }
@@ -119,33 +150,94 @@ where
         let state = state.clone();
         let dep_rx = dep_rx.clone();
         let handler = handler.clone();
-        let buffer_size = config.buffer_size;
+        let config = config.clone();
 
         Arc::new(move |_key: Key, initial_input: In| {
-            let (out_tx, out_rx) = bounded::<Out>(buffer_size);
+            let (out_tx, out_rx) = bounded::<Out>(config.buffer_size);
             let (input_tx, input_rx) = watch::channel(initial_input);
 
-            let state = state.clone();
-            let dep_rx = dep_rx.clone();
-            let handler = handler.clone();
+            let min_workers = config.min_workers.max(1);
+            let target = Arc::new(AtomicUsize::new(min_workers));
+            let active = Arc::new(AtomicUsize::new(0));
 
-            tokio::spawn(async move {
-                loop {
-                    let dep_item = match dep_rx.recv_async().await {
-                        Ok(item) => item,
-                        Err(_) => break,
-                    };
+            let spawn_one_worker = {
+                let state = state.clone();
+                let dep_rx = dep_rx.clone();
+                let handler = handler.clone();
+                let input_rx = input_rx.clone();
+                let out_tx = out_tx.clone();
+                let active = active.clone();
+                let target = target.clone();
 
-                    let current_input = input_rx.borrow().clone();
-                    let output = handler(current_input, dep_item, state.clone()).await;
+                Arc::new(move || {
+                    let _guard = WorkerGuard::new(&active);
+                    let state = state.clone();
+                    let dep_rx = dep_rx.clone();
+                    let handler = handler.clone();
+                    let input_rx = input_rx.clone();
+                    let out_tx = out_tx.clone();
+                    let active = active.clone();
+                    let target = target.clone();
 
-                    // Automatically pauses (backpressure) when per-user buffer is full.
-                    // Terminates if session was evicted from HashMap (drops out_rx).
-                    if out_tx.send_async(output).await.is_err() {
-                        break;
+                    tokio::spawn(async move {
+                        let _guard = _guard;
+                        loop {
+                            let dep_item = match dep_rx.recv_async().await {
+                                Ok(item) => item,
+                                Err(_) => break,
+                            };
+
+                            let current_input = input_rx.borrow().clone();
+                            let output = handler(current_input, dep_item, state.clone()).await;
+
+                            // Automatically pauses (backpressure) when per-session buffer is full.
+                            // Terminates if session was evicted from HashMap (drops out_rx).
+                            if out_tx.send_async(output).await.is_err() {
+                                break;
+                            }
+
+                            if active.load(Ordering::Relaxed) > target.load(Ordering::Relaxed) {
+                                break;
+                            }
+                        }
+                    });
+                })
+            };
+
+            for _ in 0..min_workers {
+                spawn_one_worker();
+            }
+
+            // Autoscaler: scales workers up when consumption empties the buffer, and down when idle
+            if config.max_workers > min_workers {
+                let out_tx = out_tx.clone();
+                let target = target.clone();
+                let spawn_one_worker = spawn_one_worker.clone();
+                let config = config.clone();
+
+                tokio::spawn(async move {
+                    let capacity = out_tx.capacity().unwrap_or(config.buffer_size) as f32;
+                    loop {
+                        tokio::time::sleep(config.check_interval).await;
+                        if out_tx.is_disconnected() {
+                            break;
+                        }
+                        let free = (capacity as usize - out_tx.len()) as f32;
+                        let cur_target = target.load(Ordering::Relaxed);
+
+                        if free > capacity * config.scale_up_threshold
+                            && cur_target < config.max_workers
+                        {
+                            target.store(cur_target + 1, Ordering::Relaxed);
+                            spawn_one_worker();
+                        } else if free < capacity * config.scale_down_threshold
+                            && cur_target > config.min_workers
+                        {
+                            target.store(cur_target - 1, Ordering::Relaxed);
+                        }
                     }
-                }
-            });
+                });
+            }
 
             KeyedSession {
                 out_rx,
@@ -205,5 +297,33 @@ mod tests {
         let res2 = queue.request(1, "world".to_string()).await.unwrap();
         // Since input channel was updated, next generated item uses latest input
         assert!(res2.starts_with("hello-") || res2.starts_with("world-"));
+    }
+
+    #[tokio::test]
+    async fn test_keyed_buffered_queue_scaling() {
+        let (dep_tx, dep_rx) = bounded::<i32>(100);
+        for i in 1..=20 {
+            dep_tx.send_async(i).await.unwrap();
+        }
+
+        let state = Arc::new(());
+        let config = KeyedBufferConfig::new(4, Duration::from_secs(10))
+            .with_workers(1, 4)
+            .with_check_interval(Duration::from_millis(10));
+
+        let queue: KeyedBufferedQueue<u64, String, String> = spawn_keyed_buffered_queue(
+            state,
+            dep_rx,
+            config,
+            |input: String, dep: i32, _| async move {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                format!("{}-{}", input, dep)
+            },
+        );
+
+        for _ in 0..10 {
+            let res = queue.request(1, "load".to_string()).await.unwrap();
+            assert!(res.starts_with("load-"));
+        }
     }
 }
