@@ -78,7 +78,9 @@ pub async fn content_queue(
     );
 
     // 3. Keyed Pre-buffering per user session (2 items ready in buffer, 30s idle TTL)
-    let buffer_config = KeyedBufferConfig::new(2, Duration::from_secs(30));
+    let buffer_config = KeyedBufferConfig::new(2, Duration::from_secs(30))
+        .with_max_workers_per_key(3)
+        .with_idle_worker_ttl(Duration::from_secs(15));
 
     spawn_keyed_buffered_queue(ctx, image_preprocess_queue, buffer_config, process_content)
 }
