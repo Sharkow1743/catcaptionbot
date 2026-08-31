@@ -420,8 +420,6 @@ pub fn process_image(
         image
     };
 
-    image.make_with_filter()
-
     // 2. Base image edit hook (operates directly on Image pixels)
     let image = session.fire_hook("image_edit", image);
 

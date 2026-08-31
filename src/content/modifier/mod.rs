@@ -18,7 +18,6 @@ pub use modifiers::adrenaline::*;
 
 pub struct HookArg<'a> {
     pub name: &'a str,
-    type_name: &'static str,
     data: *mut (),
     drop_fn: unsafe fn(*mut ()),
     _marker: PhantomData<&'a mut ()>,
@@ -29,11 +28,10 @@ impl<'a> HookArg<'a> {
         let boxed = Box::new(value);
         let data = Box::into_raw(boxed) as *mut ();
         unsafe fn drop_box<T>(ptr: *mut ()) {
-            drop(Box::from_raw(ptr as *mut T));
+            drop(unsafe { Box::from_raw(ptr as *mut T) });
         }
         Self {
             name,
-            type_name: std::any::type_name::<T>(),
             data,
             drop_fn: drop_box::<T>,
             _marker: PhantomData,
@@ -51,7 +49,7 @@ impl<'a> HookArg<'a> {
             let boxed = Box::new(modified);
             self.data = Box::into_raw(boxed) as *mut ();
             unsafe fn drop_box<T>(ptr: *mut ()) {
-                drop(Box::from_raw(ptr as *mut T));
+                drop(unsafe { Box::from_raw(ptr as *mut T) });
             }
             self.drop_fn = drop_box::<T>;
         }
