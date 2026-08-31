@@ -510,6 +510,7 @@ dependencies = [
  "terminal_size",
  "thiserror 2.0.20",
  "tokio",
+ "unicode-segmentation",
 ]
 
 [[package]]

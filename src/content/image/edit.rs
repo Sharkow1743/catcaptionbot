@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use crate::content::rarity::{Rarity, RarityManager};
 use crate::content::types::CachedImage;
+use crate::session::UserSession;
 use crate::stats;
 
 use bytes::Bytes;
@@ -10,7 +11,7 @@ use skia_rs_canvas::{Canvas, Surface};
 use skia_rs_codec::{Image, ImageEncoder, ImageInfo, JpegEncoder, SamplingOptions, decode_image};
 use skia_rs_core::{AlphaType, Color, ColorType, IRect, Rect};
 use skia_rs_paint::{Paint, Style};
-use skia_rs_text::{Font, Typeface};
+use skia_rs_text::{Font, FontFallback, Typeface};
 
 // =========================================================================
 //  TWEAKABLE LAYOUT CONSTANTS (All base values are in pixels at 800px width)
@@ -50,48 +51,197 @@ const BORDER_MIN_MATCH_FRACTION: f32 = 0.98;
 
 // =========================================================================
 
-const IMPACT_TTF: &[u8] = include_bytes!("../../../impact.ttf");
-static IMPACT_TYPEFACE: OnceLock<Arc<Typeface>> = OnceLock::new();
+const MAIN_TTF: &[u8] = include_bytes!("../../../impact.ttf");
+static MAIN_TYPEFACE: OnceLock<Arc<Typeface>> = OnceLock::new();
 
-const ARIAL_TTF: &[u8] = include_bytes!("../../../arial.ttf");
-static ARIAL_TYPEFACE: OnceLock<Arc<Typeface>> = OnceLock::new();
+const BADGE_TTF: &[u8] = include_bytes!("../../../noto.ttf");
+static BADGE_TYPEFACE: OnceLock<Arc<Typeface>> = OnceLock::new();
 
-fn impact_typeface() -> anyhow::Result<Arc<Typeface>> {
-    if let Some(tf) = IMPACT_TYPEFACE.get() {
+fn main_typeface() -> anyhow::Result<Arc<Typeface>> {
+    if let Some(tf) = MAIN_TYPEFACE.get() {
         return Ok(tf.clone());
     }
 
     let tf = Arc::new(
-        Typeface::from_data(IMPACT_TTF.to_vec())
+        Typeface::from_data(MAIN_TTF.to_vec())
             .ok_or_else(|| anyhow::anyhow!("Cannot initialize Impact font"))?,
     );
 
-    Ok(IMPACT_TYPEFACE.get_or_init(|| tf).clone())
+    Ok(MAIN_TYPEFACE.get_or_init(|| tf).clone())
 }
 
-fn arial_typeface() -> anyhow::Result<Arc<Typeface>> {
-    if let Some(tf) = ARIAL_TYPEFACE.get() {
+fn badge_typeface() -> anyhow::Result<Arc<Typeface>> {
+    if let Some(tf) = BADGE_TYPEFACE.get() {
         return Ok(tf.clone());
     }
 
     let tf = Arc::new(
-        Typeface::from_data(ARIAL_TTF.to_vec())
+        Typeface::from_data(BADGE_TTF.to_vec())
             .ok_or_else(|| anyhow::anyhow!("Cannot initialize Arial font"))?,
     );
 
-    Ok(ARIAL_TYPEFACE.get_or_init(|| tf).clone())
+    Ok(BADGE_TYPEFACE.get_or_init(|| tf).clone())
 }
 
-pub struct BadgeLayout {
-    pub top_from_bottom: f32,
-    pub left: f32,
-    pub right: f32,
+#[allow(dead_code)]
+fn load_extra_typeface(data: &[u8]) -> Option<Arc<Typeface>> {
+    Typeface::from_data(data.to_vec()).map(Arc::new)
+}
+
+static FONT_FALLBACK_CHAIN: OnceLock<FontFallback> = OnceLock::new();
+
+fn font_fallback_chain() -> &'static FontFallback {
+    FONT_FALLBACK_CHAIN.get_or_init(|| {
+        let mut chain = FontFallback::new();
+
+        // Fonts already embedded for other purposes double up as fallback
+        // sources for each other.
+        for loader in [main_typeface, badge_typeface] {
+            if let Ok(tf) = loader() {
+                chain.add_fallback(tf);
+            }
+        }
+
+        // Extra emoji/symbol/CJK fonts get added here - see the module notes
+        // above.
+
+        chain
+    })
+}
+
+fn is_invisible_joiner(c: char) -> bool {
+    matches!(c, '\u{200B}' | '\u{200D}' | '\u{FE0E}' | '\u{FE0F}')
+}
+
+fn resolve_typeface_for_char(
+    c: char,
+    primary: &Arc<Typeface>,
+    fallback: &FontFallback,
+) -> Arc<Typeface> {
+    if primary.char_to_glyph(c) != 0 {
+        return primary.clone();
+    }
+    fallback.find_font_for_char(c, primary)
+}
+
+fn measure_fallback(
+    text: &str,
+    font_size: f32,
+    primary: &Arc<Typeface>,
+    fallback: &FontFallback,
+) -> f32 {
+    let mut cursor = 0.0_f32;
+    let mut prev_tf: Option<Arc<Typeface>> = None;
+
+    for ch in text.chars() {
+        let tf = if is_invisible_joiner(ch) {
+            prev_tf.clone().unwrap_or_else(|| primary.clone())
+        } else {
+            resolve_typeface_for_char(ch, primary, fallback)
+        };
+        cursor += Font::new(tf.clone(), font_size).measure_text(&ch.to_string());
+        prev_tf = Some(tf);
+    }
+
+    cursor
 }
 
 struct CharSpan {
     ch: char,
     left: f32,
     right: f32,
+    typeface: Arc<Typeface>,
+}
+
+/// One consecutive stretch of a line that resolved to the same typeface -
+/// the actual unit we draw with a single `canvas.draw_string` call.
+struct GlyphRun {
+    text: String,
+    x: f32,
+    typeface: Arc<Typeface>,
+}
+
+fn build_runs(spans: &[CharSpan]) -> Vec<GlyphRun> {
+    let mut runs: Vec<GlyphRun> = Vec::new();
+    for span in spans {
+        match runs.last_mut() {
+            Some(run) if run.typeface.unique_id() == span.typeface.unique_id() => {
+                run.text.push(span.ch);
+            }
+            _ => runs.push(GlyphRun {
+                text: span.ch.to_string(),
+                x: span.left,
+                typeface: span.typeface.clone(),
+            }),
+        }
+    }
+    runs
+}
+
+fn run_has_color_glyphs(text: &str, font: &Font) -> bool {
+    text.chars().any(|c| {
+        let g = font.char_to_glyph(c);
+        g != 0 && font.glyph_is_color(g)
+    })
+}
+
+fn shape_line_relative(
+    line: &str,
+    font_size: f32,
+    primary: &Arc<Typeface>,
+    fallback: &FontFallback,
+) -> (Vec<CharSpan>, f32) {
+    let mut spans = Vec::with_capacity(line.chars().count());
+    let mut cursor = 0.0_f32;
+    let mut prev_tf: Option<Arc<Typeface>> = None;
+
+    for ch in line.chars() {
+        let tf = if is_invisible_joiner(ch) {
+            prev_tf.clone().unwrap_or_else(|| primary.clone())
+        } else {
+            resolve_typeface_for_char(ch, primary, fallback)
+        };
+
+        let width = Font::new(tf.clone(), font_size).measure_text(&ch.to_string());
+
+        spans.push(CharSpan {
+            ch,
+            left: cursor,
+            right: cursor + width,
+            typeface: tf.clone(),
+        });
+
+        cursor += width;
+        prev_tf = Some(tf);
+    }
+
+    (spans, cursor)
+}
+
+/// A line shaped and horizontally centered on the canvas - the shared
+/// result reused for collision detection, badge-avoidance, and drawing.
+struct ShapedLine {
+    spans: Vec<CharSpan>,
+    width: f32,
+}
+
+fn shape_and_center_line(
+    line: &str,
+    font_size: f32,
+    primary: &Arc<Typeface>,
+    fallback: &FontFallback,
+) -> ShapedLine {
+    let (rel_spans, width) = shape_line_relative(line, font_size, primary, fallback);
+    let x = (IMAGE_WIDTH - width) / 2.0;
+    let spans = rel_spans
+        .into_iter()
+        .map(|s| CharSpan {
+            left: s.left + x,
+            right: s.right + x,
+            ..s
+        })
+        .collect();
+    ShapedLine { spans, width }
 }
 
 fn is_descender(c: char) -> bool {
@@ -130,39 +280,12 @@ fn is_top_diacritic(c: char) -> bool {
     )
 }
 
-fn get_char_spans(line: &str, font: &Font, line_x: f32) -> Vec<CharSpan> {
-    let mut spans = Vec::with_capacity(line.chars().count());
-    let mut prefix = String::with_capacity(line.len());
-    let mut prev_w = 0.0;
-
-    for ch in line.chars() {
-        prefix.push(ch);
-        let curr_w = font.measure_text(&prefix);
-        if !ch.is_whitespace() {
-            spans.push(CharSpan {
-                ch,
-                left: line_x + prev_w,
-                right: line_x + curr_w,
-            });
-        }
-        prev_w = curr_w;
-    }
-    spans
-}
-
-/// Checks if any descender on top_line hangs into bottom_line OR if any top diacritic on bottom_line reaches into top_line
-fn lines_collide(
-    top_line: &str,
-    top_x: f32,
-    bottom_line: &str,
-    bottom_x: f32,
-    font: &Font,
-) -> bool {
-    let top_spans = get_char_spans(top_line, font, top_x);
-    let bottom_spans = get_char_spans(bottom_line, font, bottom_x);
-
-    for top in &top_spans {
-        for bottom in &bottom_spans {
+/// Checks if any descender on the top line's spans hangs into the bottom
+/// line's spans OR if any top diacritic on the bottom line reaches into the
+/// top line.
+fn lines_collide(top_spans: &[CharSpan], bottom_spans: &[CharSpan]) -> bool {
+    for top in top_spans {
+        for bottom in bottom_spans {
             // Horizontal overlap
             if top.right > bottom.left && top.left < bottom.right {
                 if is_descender(top.ch) || is_top_diacritic(bottom.ch) {
@@ -174,15 +297,8 @@ fn lines_collide(
     false
 }
 
-/// Checks if any descender in the bottom line horizontally overlaps the badge
-fn descender_collides_with_badge(
-    last_line: &str,
-    last_x: f32,
-    font: &Font,
-    badge_left: f32,
-    badge_right: f32,
-) -> bool {
-    let spans = get_char_spans(last_line, font, last_x);
+/// Checks if any descender in the bottom line's spans horizontally overlaps the badge
+fn descender_collides_with_badge(spans: &[CharSpan], badge_left: f32, badge_right: f32) -> bool {
     spans
         .iter()
         .any(|s| is_descender(s.ch) && s.right > badge_left && s.left < badge_right)
@@ -288,41 +404,62 @@ pub fn process_image(
     image: Image,
     text: String,
     modifiers: String,
+    session: UserSession,
 ) -> anyhow::Result<CachedImage> {
     let start = Instant::now();
     let (w, h) = image.dimensions();
 
+    // 1. Raw text string edit hook
+    let text = session.fire_hook("text_string_edit", text);
+
+    let image = if let Some(filter) = rarity.filter() {
+        image
+            .make_with_filter(filter.as_ref())
+            .ok_or_else(|| anyhow::anyhow!("Cannot apply filter"))?
+    } else {
+        image
+    };
+
+    image.make_with_filter()
+
+    // 2. Base image edit hook (operates directly on Image pixels)
+    let image = session.fire_hook("image_edit", image);
+
     let mut surface = Surface::new_raster_n32_premul(w, h)
         .ok_or_else(|| anyhow::anyhow!("Cannot create surface"))?;
     let mut canvas = surface.canvas();
+    canvas.draw_image(&image, 0.0, 0.0, None);
 
-    if let Some(filter) = rarity.filter() {
-        let filtered = image
-            .make_with_filter(filter.as_ref())
-            .ok_or_else(|| anyhow::anyhow!("Cannot apply filter"))?;
-        canvas.draw_image(&filtered, 0.0, 0.0, None);
-    } else {
-        canvas.draw_image(&image, 0.0, 0.0, None);
-    }
-
-    // Scale up for portrait images, bounded by MAX_ASPECT_SCALE
     let scale = h as f32 / IMAGE_WIDTH;
 
-    // 1. Draw the bottom rarity banner
-    let arial_tf = arial_typeface()?;
+    // 3. Draw the bottom rarity banner
+    let arial_tf = badge_typeface()?;
     let badge_layout = bake_rarity_bar(&mut canvas, arial_tf, rarity, scale, modifiers)?;
 
-    // 2. Draw the main Impact caption
-    let impact_tf = impact_typeface()?;
+    // 4. Render caption onto a separate transparent surface
+    let impact_tf = main_typeface()?;
     let upper_text = text.to_uppercase();
+
+    let mut caption_surface = Surface::new_raster_n32_premul(w, h)
+        .ok_or_else(|| anyhow::anyhow!("Cannot create caption surface"))?;
     bake_caption(
-        &mut canvas,
+        &mut caption_surface.canvas(),
         &upper_text,
         impact_tf,
         rarity,
         &badge_layout,
         scale,
     )?;
+
+    let caption_image = caption_surface
+        .make_image_snapshot()
+        .ok_or_else(|| anyhow::anyhow!("Cannot snapshot caption surface"))?;
+
+    // 5. Text image edit hook (operates directly on caption Image pixels)
+    let caption_image = session.fire_hook("text_image_edit", caption_image);
+
+    // 6. Draw the corrupted caption onto the main canvas
+    canvas.draw_image(&caption_image, 0.0, 0.0, None);
 
     let baked = surface
         .make_image_snapshot()
@@ -341,6 +478,12 @@ pub fn process_image(
     Ok(CachedImage::from_bytes(out))
 }
 
+pub struct BadgeLayout {
+    pub top_from_bottom: f32,
+    pub left: f32,
+    pub right: f32,
+}
+
 pub fn bake_rarity_bar(
     canvas: &mut Canvas,
     typeface: Arc<Typeface>,
@@ -349,9 +492,10 @@ pub fn bake_rarity_bar(
     modifiers: String,
 ) -> anyhow::Result<BadgeLayout> {
     let h_f = canvas.height() as f32;
+    let fallback = font_fallback_chain();
 
     let percentage = RarityManager::global().rarity_percentage(rarity);
-    let label = format!("{} {:.2}% • {}", rarity.name(), percentage, modifiers);
+    let label = format!("{} {:.2}% {}", rarity.name(), percentage, modifiers);
 
     let font_size = RARITY_FONT_SIZE * scale;
     let pad_x = RARITY_PAD_X * scale;
@@ -359,15 +503,19 @@ pub fn bake_rarity_bar(
     let corner_radius = RARITY_CORNER_RADIUS * scale;
     let bottom_margin = RARITY_BOTTOM_MARGIN * scale;
 
-    let mut font = Font::new(typeface, font_size);
-    let mut text_width = font.measure_text(&label);
+    // Fallback-aware measurement: modifier strings aren't guaranteed to be
+    // ASCII, so measure (and, further down, draw) the label the same
+    // run-by-run way the caption is handled.
+    let (_, mut text_width) = shape_line_relative(&label, font_size, &typeface, fallback);
+    let mut effective_size = font_size;
 
     // Ensure badge never overflows the canvas width
     let max_badge_w = IMAGE_WIDTH - 24.0;
     if text_width + pad_x * 2.0 > max_badge_w {
-        let fit_font_size = font_size * (max_badge_w - pad_x * 2.0) / text_width;
-        font.set_size(fit_font_size.max(12.0));
-        text_width = font.measure_text(&label);
+        let fit_font_size = effective_size * (max_badge_w - pad_x * 2.0) / text_width;
+        effective_size = fit_font_size.max(12.0);
+        let (_, w) = shape_line_relative(&label, effective_size, &typeface, fallback);
+        text_width = w;
     }
 
     let badge_w = (text_width + pad_x * 2.0).min(max_badge_w);
@@ -389,10 +537,35 @@ pub fn bake_rarity_bar(
     text_paint.set_anti_alias(true);
     text_paint.set_style(Style::Fill);
 
+    // Color glyphs (emoji in a modifier string, say) carry their own
+    // palette - drawing them with the rarity-colored paint would tint them
+    // incorrectly, so they get a neutral, full-alpha paint instead.
+    let mut color_glyph_paint = Paint::new();
+    color_glyph_paint.set_color(Color::WHITE.into());
+    color_glyph_paint.set_anti_alias(true);
+    color_glyph_paint.set_style(Style::Fill);
+
     let text_x = badge_x + pad_x;
     let text_y = badge_y + (RARITY_TEXT_Y_OFFSET * scale);
 
-    canvas.draw_string(&label, text_x, text_y, &font, &text_paint);
+    let (rel_spans, _) = shape_line_relative(&label, effective_size, &typeface, fallback);
+    let abs_spans: Vec<CharSpan> = rel_spans
+        .into_iter()
+        .map(|s| CharSpan {
+            left: s.left + text_x,
+            right: s.right + text_x,
+            ..s
+        })
+        .collect();
+
+    for run in build_runs(&abs_spans) {
+        let run_font = Font::new(run.typeface.clone(), effective_size);
+        if run_has_color_glyphs(&run.text, &run_font) {
+            canvas.draw_string(&run.text, run.x, text_y, &run_font, &color_glyph_paint);
+        } else {
+            canvas.draw_string(&run.text, run.x, text_y, &run_font, &text_paint);
+        }
+    }
 
     Ok(BadgeLayout {
         top_from_bottom: bottom_margin + badge_h,
@@ -410,6 +583,7 @@ pub fn bake_caption(
     scale: f32,
 ) -> anyhow::Result<()> {
     let h_f = canvas.height() as f32;
+    let fallback = font_fallback_chain();
 
     let (font_size, lines) = fit_text(
         text,
@@ -421,19 +595,21 @@ pub fn bake_caption(
         scale,
     );
 
-    let font = Font::new(typeface, font_size);
     let stroke_width = CAPTION_STROKE_WIDTH * scale;
     let half_stroke = stroke_width / 2.0;
 
-    let line_xs: Vec<f32> = lines
+    // Shape every line once at the final size; this is reused for collision
+    // detection, badge-avoidance, and the glyph runs drawn below, so nothing
+    // shifts between what `fit_text` checked and what actually gets drawn.
+    let shaped: Vec<ShapedLine> = lines
         .iter()
-        .map(|line| (IMAGE_WIDTH - font.measure_text(line)) / 2.0)
+        .map(|l| shape_and_center_line(l, font_size, &typeface, fallback))
         .collect();
 
     // 1. Calculate the gaps between each adjacent pair of lines
-    let mut line_steps = Vec::with_capacity(lines.len().saturating_sub(1));
-    for i in 0..lines.len().saturating_sub(1) {
-        let collides = lines_collide(&lines[i], line_xs[i], &lines[i + 1], line_xs[i + 1], &font);
+    let mut line_steps = Vec::with_capacity(shaped.len().saturating_sub(1));
+    for i in 0..shaped.len().saturating_sub(1) {
+        let collides = lines_collide(&shaped[i].spans, &shaped[i + 1].spans);
         let extra_gap = if collides {
             LINE_COLLISION_EXTRA_SPACING * scale
         } else {
@@ -443,14 +619,9 @@ pub fn bake_caption(
     }
 
     // 2. Check if the bottom line collides with the rarity badge
-    let last_idx = lines.len() - 1;
-    let badge_collides = descender_collides_with_badge(
-        &lines[last_idx],
-        line_xs[last_idx],
-        &font,
-        badge.left,
-        badge.right,
-    );
+    let last_idx = shaped.len() - 1;
+    let badge_collides =
+        descender_collides_with_badge(&shaped[last_idx].spans, badge.left, badge.right);
 
     let descender_offset = if badge_collides {
         DESCENDER_AVOID_SHIFT * scale
@@ -462,13 +633,16 @@ pub fn bake_caption(
     let bottom_baseline = h_f - badge.top_from_bottom - gap - descender_offset - half_stroke;
 
     // 3. Compute baseline Y positions for all lines working upwards from the bottom line
-    let mut y_positions = vec![0.0; lines.len()];
+    let mut y_positions = vec![0.0; shaped.len()];
     y_positions[last_idx] = bottom_baseline;
     for i in (0..last_idx).rev() {
         y_positions[i] = y_positions[i + 1] - line_steps[i];
     }
 
-    // 4. Draw stroke outline & fill
+    // 4. Draw stroke outline & fill, one glyph run at a time so that
+    // characters outside the Impact font (emoji, Braille, CJK, ...) render
+    // from whichever typeface in the Unicode fallback chain actually has
+    // them, instead of silently not rendering at all.
     let mut fill = Paint::new();
     fill.set_color(rarity.text_color().into());
     fill.set_anti_alias(true);
@@ -480,12 +654,25 @@ pub fn bake_caption(
     stroke.set_style(Style::Stroke);
     stroke.set_stroke_width(stroke_width);
 
-    for (i, line) in lines.iter().enumerate() {
-        let x = line_xs[i];
-        let y = y_positions[i];
+    // Color glyphs (emoji) carry their own palette; a black stroke outline
+    // or the rarity fill color would look wrong on top of them, so these
+    // runs get drawn plain instead of stroke+fill.
+    let mut color_glyph_paint = Paint::new();
+    color_glyph_paint.set_color(Color::WHITE.into());
+    color_glyph_paint.set_anti_alias(true);
+    color_glyph_paint.set_style(Style::Fill);
 
-        canvas.draw_string(line, x, y, &font, &stroke);
-        canvas.draw_string(line, x, y, &font, &fill);
+    for (i, line) in shaped.iter().enumerate() {
+        let y = y_positions[i];
+        for run in build_runs(&line.spans) {
+            let run_font = Font::new(run.typeface.clone(), font_size);
+            if run_has_color_glyphs(&run.text, &run_font) {
+                canvas.draw_string(&run.text, run.x, y, &run_font, &color_glyph_paint);
+            } else {
+                canvas.draw_string(&run.text, run.x, y, &run_font, &stroke);
+                canvas.draw_string(&run.text, run.x, y, &run_font, &fill);
+            }
+        }
     }
 
     Ok(())
@@ -500,16 +687,18 @@ fn fit_text(
     min_size: f32,
     scale: f32,
 ) -> (f32, Vec<String>) {
-    let mut font = Font::new(typeface.clone(), start_size);
+    let fallback = font_fallback_chain();
 
-    let fits_at = |size: f32, font: &mut Font| -> (bool, Vec<String>) {
-        font.set_size(size);
-        let lines = word_wrap(text, font, max_width);
+    let fits_at = |size: f32| -> (bool, Vec<String>) {
+        let lines = word_wrap(text, size, typeface, fallback, max_width);
+
+        let shaped: Vec<ShapedLine> = lines
+            .iter()
+            .map(|l| shape_and_center_line(l, size, typeface, fallback))
+            .collect();
 
         // Crucial: check that EVERY single line fits within the max horizontal width
-        let width_fits = lines
-            .iter()
-            .all(|line| font.measure_text(line) <= max_width);
+        let width_fits = shaped.iter().all(|s| s.width <= max_width);
         if !width_fits {
             return (false, lines);
         }
@@ -518,15 +707,9 @@ fn fit_text(
             return (size <= max_height, lines);
         }
 
-        let line_xs: Vec<f32> = lines
-            .iter()
-            .map(|l| (IMAGE_WIDTH - font.measure_text(l)) / 2.0)
-            .collect();
-
         let mut total_height = size;
-        for i in 0..lines.len() - 1 {
-            let collides =
-                lines_collide(&lines[i], line_xs[i], &lines[i + 1], line_xs[i + 1], font);
+        for i in 0..shaped.len() - 1 {
+            let collides = lines_collide(&shaped[i].spans, &shaped[i + 1].spans);
             let extra_gap = if collides {
                 LINE_COLLISION_EXTRA_SPACING * scale
             } else {
@@ -538,19 +721,19 @@ fn fit_text(
         (total_height <= max_height, lines)
     };
 
-    let (start_fits, start_lines) = fits_at(start_size, &mut font);
+    let (start_fits, start_lines) = fits_at(start_size);
     if start_fits {
         return (start_size, start_lines);
     }
 
     let mut lo = min_size;
     let mut hi = start_size;
-    let (_, min_lines) = fits_at(min_size, &mut font);
+    let (_, min_lines) = fits_at(min_size);
     let mut best = (min_size, min_lines);
 
     while hi - lo > 0.5 {
         let mid = (lo + hi) / 2.0;
-        let (fits, lines) = fits_at(mid, &mut font);
+        let (fits, lines) = fits_at(mid);
         if fits {
             best = (mid, lines);
             lo = mid; // Try larger
@@ -561,13 +744,19 @@ fn fit_text(
     best
 }
 
-fn word_wrap(text: &str, font: &Font, max_width: f32) -> Vec<String> {
+fn word_wrap(
+    text: &str,
+    font_size: f32,
+    primary: &Arc<Typeface>,
+    fallback: &FontFallback,
+    max_width: f32,
+) -> Vec<String> {
     let mut lines = Vec::new();
     let mut current = String::with_capacity(text.len());
-    let space_width = font.measure_text(" ");
+    let space_width = measure_fallback(" ", font_size, primary, fallback);
 
     for word in text.split_whitespace() {
-        let word_width = font.measure_text(word);
+        let word_width = measure_fallback(word, font_size, primary, fallback);
 
         // If a single word alone exceeds max_width, split it across characters
         if word_width > max_width {
@@ -578,7 +767,7 @@ fn word_wrap(text: &str, font: &Font, max_width: f32) -> Vec<String> {
             for ch in word.chars() {
                 let mut test = current.clone();
                 test.push(ch);
-                if font.measure_text(&test) <= max_width {
+                if measure_fallback(&test, font_size, primary, fallback) <= max_width {
                     current.push(ch);
                 } else {
                     if !current.is_empty() {
@@ -594,7 +783,7 @@ fn word_wrap(text: &str, font: &Font, max_width: f32) -> Vec<String> {
         if current.is_empty() {
             current.push_str(word);
         } else {
-            let current_width = font.measure_text(&current);
+            let current_width = measure_fallback(&current, font_size, primary, fallback);
             if current_width + space_width + word_width <= max_width {
                 current.push(' ');
                 current.push_str(word);

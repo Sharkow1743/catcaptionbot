@@ -5,8 +5,8 @@ pub mod modifiers {
 use crate::session::UserSession;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::any::Any;
 use std::collections::{HashMap, HashSet};
+use std::marker::PhantomData;
 use std::sync::{Mutex, OnceLock};
 
 pub use inventory;
@@ -18,14 +18,59 @@ pub use modifiers::adrenaline::*;
 
 pub struct HookArg<'a> {
     pub name: &'a str,
-    pub value: &'a mut dyn Any,
+    type_name: &'static str,
+    data: *mut (),
+    drop_fn: unsafe fn(*mut ()),
+    _marker: PhantomData<&'a mut ()>,
 }
 
 impl<'a> HookArg<'a> {
-    pub fn on<T: 'static>(&mut self, name: &str, f: impl FnOnce(&mut T)) {
+    pub fn new<T>(name: &'a str, value: T) -> Self {
+        let boxed = Box::new(value);
+        let data = Box::into_raw(boxed) as *mut ();
+        unsafe fn drop_box<T>(ptr: *mut ()) {
+            drop(Box::from_raw(ptr as *mut T));
+        }
+        Self {
+            name,
+            type_name: std::any::type_name::<T>(),
+            data,
+            drop_fn: drop_box::<T>,
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn on<T>(mut self, name: &str, f: impl FnOnce(T) -> T) -> Self {
         if self.name == name {
-            if let Some(val) = self.value.downcast_mut::<T>() {
-                f(val);
+            let val = unsafe { *Box::from_raw(self.data as *mut T) };
+            self.data = std::ptr::null_mut();
+            self.drop_fn = |_| {};
+
+            let modified = f(val);
+
+            let boxed = Box::new(modified);
+            self.data = Box::into_raw(boxed) as *mut ();
+            unsafe fn drop_box<T>(ptr: *mut ()) {
+                drop(Box::from_raw(ptr as *mut T));
+            }
+            self.drop_fn = drop_box::<T>;
+        }
+        self
+    }
+
+    pub fn into_value<T>(mut self) -> T {
+        let val = unsafe { *Box::from_raw(self.data as *mut T) };
+        self.data = std::ptr::null_mut();
+        self.drop_fn = |_| {};
+        val
+    }
+}
+
+impl<'a> Drop for HookArg<'a> {
+    fn drop(&mut self) {
+        if !self.data.is_null() {
+            unsafe {
+                (self.drop_fn)(self.data);
             }
         }
     }
@@ -49,7 +94,9 @@ pub trait Modifier: Default + Serialize + DeserializeOwned + Send + Sync + 'stat
     }
 
     fn on_trigger(&mut self, _name: &str, _session: &mut UserSession) {}
-    fn apply_hook(&self, _session: &UserSession, _hook: &mut HookArg) {}
+    fn apply_hook<'a>(&self, _session: &UserSession, hook: HookArg<'a>) -> HookArg<'a> {
+        hook
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -74,18 +121,18 @@ pub fn dispatch_trigger<T: Modifier>(
     }
 }
 
-pub fn dispatch_hook<T: Modifier>(
+pub fn dispatch_hook<'a, T: Modifier>(
     json_val: &serde_json::Value,
     session: &UserSession,
-    hook: &mut HookArg,
-) {
+    hook: HookArg<'a>,
+) -> HookArg<'a> {
     let instance: T = if json_val.is_null() {
         T::default()
     } else {
         serde_json::from_value(json_val.clone()).unwrap_or_default()
     };
 
-    instance.apply_hook(session, hook);
+    instance.apply_hook(session, hook)
 }
 
 pub fn dispatch_is_active<T: Modifier>(json_val: &serde_json::Value) -> bool {
@@ -118,7 +165,7 @@ pub struct ModifierDefinition {
     pub triggers: &'static [&'static str],
     pub hooks: &'static [&'static str],
     pub dispatch_trigger: fn(&str, &mut serde_json::Value, &mut UserSession),
-    pub dispatch_hook: fn(&serde_json::Value, &UserSession, &mut HookArg),
+    pub dispatch_hook: for<'a> fn(&serde_json::Value, &UserSession, HookArg<'a>) -> HookArg<'a>,
     pub is_active: fn(&serde_json::Value) -> bool,
     pub display: fn(&serde_json::Value) -> String,
 }
@@ -200,7 +247,6 @@ pub struct ModifierBag {
 }
 
 impl ModifierBag {
-    /// Returns all display strings for modifiers where `is_active()` returns `true`.
     pub fn active_displays(&self) -> Vec<String> {
         let registry = ModifierRegistry::global();
         let mut displays = Vec::new();
@@ -219,12 +265,10 @@ impl ModifierBag {
         displays
     }
 
-    /// Combines all active modifier displays into a single string using a separator (e.g. `\n` or `, `).
     pub fn display_active(&self, separator: &str) -> String {
         self.active_displays().join(separator)
     }
 
-    /// Checks if a specific modifier by ID is currently active.
     pub fn is_active(&self, id: &str) -> bool {
         let registry = ModifierRegistry::global();
         let Some(def) = registry.get(id) else {
@@ -236,7 +280,6 @@ impl ModifierBag {
         (def.is_active)(json_val)
     }
 
-    /// Returns a list of IDs of all currently active modifiers.
     pub fn active_ids(&self) -> Vec<&'static str> {
         let registry = ModifierRegistry::global();
         let mut ids = Vec::new();

@@ -1,12 +1,13 @@
 mod commands;
-pub mod content;
+mod content;
 mod controls;
 mod logger;
 mod macros;
-pub mod queue;
-pub mod session;
-pub mod state;
-pub mod text;
+mod queue;
+mod session;
+mod state;
+mod text;
+mod utils;
 
 use std::time::Duration;
 
@@ -82,15 +83,15 @@ async fn main() -> anyhow::Result<()> {
         )
         .branch(Update::filter_kb_callback().endpoint(handle_keyboard_callback));
 
-    Dispatcher::builder(bot, handler)
-        .dependencies(deps![
-            InMemStorage::<State>::new(),
-            app_state,
-            content_queue
-        ])
-        .enable_ctrlc_handler()
-        .build()
-        .dispatch()
-        .await;
+    let dispatcher = Dispatcher::builder(bot, handler).dependencies(deps![
+        InMemStorage::<State>::new(),
+        app_state,
+        content_queue
+    ]);
+    #[cfg(not(debug_assertions))]
+    {
+        let dispatcher = dispatcher.enable_ctrlc_handler();
+    }
+    dispatcher.build().dispatch().await;
     Ok(())
 }

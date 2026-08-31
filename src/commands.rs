@@ -20,7 +20,7 @@ pub async fn handle_start(
 ) -> HandlerResult {
     dialogue.reset().await?;
     let kb = dialogue.get_or_default().await?.keyboard();
-    let welcome = "🐱 Привет! Нажми «Получить», чтобы сгенерировать кота.";
+    let welcome = "[START MESSAGE]";
     maybe_kb!(bot.send_message(msg.chat.id, welcome), kb).await?;
     Ok(())
 }

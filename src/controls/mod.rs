@@ -10,7 +10,8 @@ use crate::content::Content;
 use crate::queue::KeyedBufferedQueue;
 use crate::session::UserSession;
 use crate::state::AppState;
-use crate::stats;
+use crate::utils::unix_timestamp;
+use crate::{notice, stats};
 
 use super::reply_kb;
 use super::state::DialogueState;
@@ -39,14 +40,32 @@ pub async fn handle_keyboard_callback(
     _dialogue: DialogueState,
     cmd: KbCommand,
     content_queue: KeyedBufferedQueue<u64, UserSession, anyhow::Result<Content>>,
-    mut session: UserSession,
+    session: UserSession,
     app_state: AppState,
 ) -> HandlerResult {
     match cmd {
         KbCommand::Get => {
-            session.fire_trigger("on_roll");
-
             let serve_time = Instant::now();
+            let user_id = session.user_id;
+            let now = unix_timestamp();
+
+            // Atomically fetch-mutate-save the session so concurrent callback
+            // updates for the same user can't race and lose an increment
+            // (e.g. adrenaline) to each other.
+            let session = app_state
+                .session_manager
+                .mutate_session(user_id, |session| {
+                    let latest_roll = *session.rolls.get_latest().unwrap_or(&now);
+                    let between_rolls = now - latest_roll;
+                    session.between_rolls.push(between_rolls);
+
+                    session.fire_trigger("on_roll");
+
+                    session.rolls.push(now);
+
+                    session.clone()
+                })
+                .await?;
 
             let mut content = content_queue
                 .request(session.user_id, session.clone())
@@ -67,10 +86,6 @@ pub async fn handle_keyboard_callback(
             }?;
 
             image.set_file_id(img_id);
-
-            session.last_roll = crate::session::unix_timestamp();
-
-            app_state.session_manager.save_session(&session).await?;
         }
     }
 

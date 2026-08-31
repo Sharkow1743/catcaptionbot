@@ -84,15 +84,11 @@ pub async fn content_queue(
 }
 
 async fn process_content(
-    mut session: UserSession,
+    session: UserSession,
     image: Image,
     ctx: Arc<PipelineContext>,
 ) -> anyhow::Result<Content> {
-    session.fire_trigger("on_generation_start");
-    let modifiers = session.modifiers.display_active("|");
-
-    // Async DB save (does not block CPU)
-    ctx.app_state.session_manager.save_session(&session).await?;
+    let modifiers = session.modifiers.display_active("");
 
     let rarity_time = Instant::now();
     let rarity = RarityManager::global()
@@ -102,18 +98,20 @@ async fn process_content(
 
     let text_time = Instant::now();
     let text = generate_rarity_text(rarity.as_ref(), ctx.app_state.composer.clone()).await?;
+    let text = session.fire_hook("text_string_edit", text);
     let text_time = text_time.elapsed();
 
     let image_time = Instant::now();
     let image = {
         let rarity = rarity.clone();
         let text = text.clone();
+        let session = session.clone();
 
         // High-priority compute permit: can use any available core immediately
         let _permit = ctx.limiter.acquire_foreground().await;
 
         // Render composite on Rayon pool (bypasses Tokio's runtime threads)
-        run_cpu(move || process_image(rarity.as_ref(), image, text, modifiers)).await?
+        run_cpu(move || process_image(rarity.as_ref(), image, text, modifiers, session)).await?
     };
     let image_time = image_time.elapsed();
 

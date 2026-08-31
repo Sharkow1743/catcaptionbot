@@ -22,10 +22,6 @@ pub trait Rarity: Send + Sync {
             WordSpec::new().poses(&[Pos::Noun]),
         ]
     }
-    #[allow(dead_code)]
-    fn template_failable(&self) -> anyhow::Result<Vec<WordSpec>> {
-        Ok(self.template())
-    }
     fn weight(&self) -> f32 {
         1.0
     }
@@ -135,10 +131,10 @@ impl RarityManager {
         &self,
         session: &crate::session::UserSession,
     ) -> Option<Arc<dyn Rarity>> {
-        let mut weights_map: std::collections::HashMap<String, f32> =
+        let weights_map: std::collections::HashMap<String, f32> =
             self.rarities.iter().map(|r| (r.id(), r.weight())).collect();
 
-        session.fire_hook("rarity_weights", &mut weights_map);
+        let weights_map = session.fire_hook("rarity_weights", weights_map);
 
         let weights: Vec<f32> = self
             .rarities

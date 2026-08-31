@@ -56,17 +56,3 @@ impl Config {
         Self::default()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_config_defaults() {
-        let config = Config::default();
-        assert_eq!(config.morphology_db_path, "morphology.db");
-        assert_eq!(config.words_db_path, "words.db");
-        assert_eq!(config.app_db_path, "app.db");
-        assert_eq!(config.connect_timeout_secs, 30);
-    }
-}

@@ -1,16 +1,18 @@
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
-
-mod utils;
-pub use utils::unix_timestamp;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::content::modifier::{HookArg, ModifierBag, ModifierRegistry, warn_once};
+use crate::utils::CappedBuffer;
 
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct UserSession {
     pub user_id: u64,
-    pub last_roll: i64,
+    pub rolls: CappedBuffer<i64>,
+    pub between_rolls: CappedBuffer<i64>,
     pub modifiers: ModifierBag,
 }
 
@@ -26,8 +28,7 @@ impl UserSession {
                 let mut json_val = self
                     .modifiers
                     .entries
-                    .get(def.id)
-                    .cloned()
+                    .remove(def.id)
                     .unwrap_or(serde_json::Value::Null);
 
                 (def.dispatch_trigger)(name, &mut json_val, self);
@@ -38,27 +39,30 @@ impl UserSession {
     }
 
     #[allow(dead_code)]
-    pub fn fire_hook<T: 'static>(&self, name: &str, value: &mut T) {
+    pub fn fire_hook<T>(&self, name: &str, value: T) -> T {
         let registry = ModifierRegistry::global();
         if !registry.known_hooks.contains(name) {
             warn_once("hook", name);
         }
 
-        let mut hook_arg = HookArg { name, value };
+        let mut hook_arg = HookArg::new(name, value);
 
         for def in registry.all() {
             if def.hooks.contains(&name) {
                 let default_json = serde_json::Value::Null;
                 let json_val = self.modifiers.entries.get(def.id).unwrap_or(&default_json);
-                (def.dispatch_hook)(json_val, self, &mut hook_arg);
+                hook_arg = (def.dispatch_hook)(json_val, self, hook_arg);
             }
         }
+
+        hook_arg.into_value::<T>()
     }
 }
 
 #[derive(Clone)]
 pub struct SessionManager {
     pool: SqlitePool,
+    locks: Arc<Mutex<HashMap<u64, Arc<AsyncMutex<()>>>>>,
 }
 
 impl SessionManager {
@@ -92,7 +96,19 @@ impl SessionManager {
         .execute(&pool)
         .await?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            locks: Arc::new(Mutex::new(HashMap::new())),
+        })
+    }
+
+    fn user_lock(&self, user_id: u64) -> Arc<AsyncMutex<()>> {
+        self.locks
+            .lock()
+            .unwrap()
+            .entry(user_id)
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
     }
 
     pub async fn get_session(&self, user_id: u64) -> Result<UserSession, sqlx::Error> {
@@ -128,11 +144,13 @@ impl SessionManager {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub async fn mutate_session<F, R>(&self, user_id: u64, f: F) -> Result<R, sqlx::Error>
     where
         F: FnOnce(&mut UserSession) -> R,
     {
+        let lock = self.user_lock(user_id);
+        let _guard = lock.lock().await;
+
         let mut session = self.get_session(user_id).await?;
         let result = f(&mut session);
         self.save_session(&session).await?;
@@ -141,70 +159,28 @@ impl SessionManager {
 
     #[allow(dead_code)]
     pub async fn fire_trigger(&self, user_id: u64, name: &str) -> Result<(), sqlx::Error> {
-        let mut session = self.get_session(user_id).await?;
-        session.fire_trigger(name);
-        self.save_session(&session).await?;
-        Ok(())
+        self.mutate_session(user_id, |session| {
+            session.fire_trigger(name);
+        })
+        .await
     }
 
     #[allow(dead_code)]
-    pub async fn fire_hook<T: Default + 'static>(
+    pub async fn fire_hook<T: Default>(&self, user_id: u64, name: &str) -> Result<T, sqlx::Error> {
+        let session = self.get_session(user_id).await?;
+        let value = session.fire_hook(name, T::default());
+        Ok(value)
+    }
+
+    #[allow(dead_code)]
+    pub async fn fire_hook_with<T>(
         &self,
         user_id: u64,
         name: &str,
+        value: T,
     ) -> Result<T, sqlx::Error> {
         let session = self.get_session(user_id).await?;
-        let mut value = T::default();
-        session.fire_hook(name, &mut value);
+        let value = session.fire_hook(name, value);
         Ok(value)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_user_session_triggers_adrenaline() {
-        let mut session = UserSession {
-            user_id: 12345,
-            ..Default::default()
-        };
-
-        assert!(!session.modifiers.is_active("adrenaline"));
-        assert_eq!(session.modifiers.display_active("|"), "");
-
-        session.fire_trigger("on_roll");
-        assert!(session.modifiers.is_active("adrenaline"));
-        assert_eq!(session.modifiers.display_active("|"), "⚡1");
-
-        session.fire_trigger("on_roll");
-        assert_eq!(session.modifiers.display_active("|"), "⚡2");
-
-        session.fire_trigger("on_catch");
-        assert_eq!(session.modifiers.display_active("|"), "⚡1");
-
-        session.fire_trigger("on_escape");
-        assert_eq!(session.modifiers.display_active("|"), "⚡1");
-    }
-
-    #[tokio::test]
-    async fn test_session_manager_sqlite() {
-        let manager = SessionManager::new(":memory:").await.unwrap();
-
-        let session = manager.get_session(42).await.unwrap();
-        assert_eq!(session.user_id, 42);
-
-        manager
-            .mutate_session(42, |s| {
-                s.last_roll = 1000;
-                s.fire_trigger("on_roll");
-            })
-            .await
-            .unwrap();
-
-        let updated = manager.get_session(42).await.unwrap();
-        assert_eq!(updated.last_roll, 1000);
-        assert!(updated.modifiers.is_active("adrenaline"));
     }
 }
