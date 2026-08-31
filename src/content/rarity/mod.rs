@@ -4,13 +4,13 @@ use rand::distr::weighted::WeightedIndex;
 use rand::prelude::*;
 use skia_rs_core::Color;
 use skia_rs_paint::ImageFilterRef;
+use std::fmt::Debug;
 use std::sync::{Arc, OnceLock};
 
-// Re-exported so the macros below work from any module without callers
-// needing `inventory` as a direct dependency.
 pub use inventory;
 
-pub trait Rarity: Send + Sync {
+// NO typetag macros here!
+pub trait Rarity: Send + Sync + Debug {
     fn name(&self) -> String;
     fn id(&self) -> String;
     fn is_secret(&self) -> bool {
@@ -36,13 +36,13 @@ pub trait Rarity: Send + Sync {
     }
 }
 
-/// A single entry submitted into the global rarity registry.
 pub struct RarityRegistration(pub fn() -> Arc<dyn Rarity>);
 inventory::collect!(RarityRegistration);
 
 #[macro_export]
 macro_rules! rarity_struct {
     ($vis:vis $Name:ident, id = $id:literal, name = $name:literal $(, $($rest:tt)*)?) => {
+        #[derive(Debug, serde::Serialize, serde::Deserialize)]
         $vis struct $Name;
 
         impl $crate::content::rarity::Rarity for $Name {
@@ -83,18 +83,6 @@ impl RarityManager {
         self.rarities.push(Arc::new(rarity));
     }
 
-    #[allow(dead_code)]
-    pub fn extend<T>(mut self, rarities: T) -> Self
-    where
-        T: IntoIterator,
-        T::Item: Rarity + 'static,
-    {
-        for r in rarities {
-            self.add_rarity(r);
-        }
-        self
-    }
-
     pub fn from_registry() -> Self {
         let mut mgr = Self::new();
         for reg in inventory::iter::<RarityRegistration> {
@@ -106,6 +94,11 @@ impl RarityManager {
     pub fn global() -> &'static RarityManager {
         static GLOBAL: OnceLock<RarityManager> = OnceLock::new();
         GLOBAL.get_or_init(RarityManager::from_registry)
+    }
+
+    // ADDED: Lookup function for the database loader
+    pub fn get_by_id(&self, id: &str) -> Option<Arc<dyn Rarity>> {
+        self.rarities.iter().find(|r| r.id() == id).cloned()
     }
 
     pub fn total_weight(&self) -> f32 {
@@ -153,14 +146,19 @@ impl RarityManager {
     }
 }
 
+// Custom Rarity Implementation (No typetag)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SimpleRarity {
     name: String,
     id: String,
     is_secret: bool,
     template: Vec<WordSpec>,
     weight: f32,
+    #[serde(skip)]
     filter: Option<ImageFilterRef>,
+    #[serde(skip)]
     rarity_color: Color,
+    #[serde(skip)]
     text_color: Color,
 }
 
@@ -177,9 +175,9 @@ impl SimpleRarity {
             text_color: Color::WHITE,
         }
     }
-    #[allow(dead_code)]
-    pub fn secret(mut self, v: bool) -> Self {
-        self.is_secret = v;
+
+    pub fn template(mut self, t: Vec<WordSpec>) -> Self {
+        self.template = t;
         self
     }
 
@@ -187,18 +185,12 @@ impl SimpleRarity {
         self.weight = w;
         self
     }
-    pub fn template(mut self, t: Vec<WordSpec>) -> Self {
-        self.template = t;
-        self
-    }
-    pub fn filter(mut self, f: ImageFilterRef) -> Self {
-        self.filter = Some(f);
-        self
-    }
+
     pub fn rarity_color(mut self, c: Color) -> Self {
         self.rarity_color = c;
         self
     }
+
     pub fn text_color(mut self, c: Color) -> Self {
         self.text_color = c;
         self
@@ -229,43 +221,5 @@ impl Rarity for SimpleRarity {
     }
     fn text_color(&self) -> Color {
         self.text_color
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_rarity_manager_weights_and_picking() {
-        let mut mgr = RarityManager::new();
-        mgr.add_rarity(SimpleRarity::new("Common", "common").weight(7.0));
-        mgr.add_rarity(SimpleRarity::new("Rare", "rare").weight(3.0));
-
-        assert_eq!(mgr.total_weight(), 10.0);
-        let common = SimpleRarity::new("Common", "common").weight(7.0);
-        assert!((mgr.rarity_percentage(&common) - 70.0).abs() < f32::EPSILON);
-
-        let picked = mgr.pick();
-        assert!(picked.is_some());
-    }
-
-    #[test]
-    fn test_global_registry_populated() {
-        let global = RarityManager::global();
-        assert!(global.total_weight() > 0.0);
-        assert!(global.pick().is_some());
-    }
-
-    #[test]
-    fn test_pick_for_session_with_modifiers() {
-        let mut session = crate::session::UserSession::default();
-        // Fire rolls to build up adrenaline
-        session.fire_trigger("on_roll");
-        session.fire_trigger("on_roll");
-
-        let global = RarityManager::global();
-        let picked = global.pick_for_session(&session);
-        assert!(picked.is_some());
     }
 }

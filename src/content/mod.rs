@@ -20,6 +20,7 @@ use rarity::{Rarity, RarityManager};
 pub use types::Content;
 
 mod image;
+pub mod inventory;
 pub mod modifier;
 pub mod rarity;
 mod types;

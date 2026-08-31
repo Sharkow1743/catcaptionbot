@@ -1,19 +1,31 @@
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+
+use moka::future::Cache;
+use native_db::*;
+use native_model::{Model, native_model};
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
-use sqlx::sqlite::SqliteConnectOptions;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::content::inventory::Inventory;
 use crate::content::modifier::{HookArg, ModifierBag, ModifierRegistry, warn_once};
 use crate::utils::CappedBuffer;
 
-#[derive(Clone, Serialize, Deserialize, Default)]
+const LOCK_STRIPES: usize = 256;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[native_model(id = 1, version = 1)]
+#[native_db]
 pub struct UserSession {
+    #[primary_key]
     pub user_id: u64,
+
     pub rolls: CappedBuffer<i64>,
     pub between_rolls: CappedBuffer<i64>,
     pub modifiers: ModifierBag,
+
+    #[serde(default)]
+    pub inventory: Inventory,
 }
 
 impl UserSession {
@@ -25,15 +37,19 @@ impl UserSession {
 
         for def in registry.all() {
             if def.triggers.contains(&name) {
-                let mut json_val = self
+                let json_str = self
                     .modifiers
                     .entries
                     .remove(def.id)
-                    .unwrap_or(serde_json::Value::Null);
+                    .unwrap_or_else(|| "null".to_string());
+                let mut json_val: serde_json::Value =
+                    serde_json::from_str(&json_str).unwrap_or(serde_json::Value::Null);
 
                 (def.dispatch_trigger)(name, &mut json_val, self);
 
-                self.modifiers.entries.insert(def.id.to_string(), json_val);
+                self.modifiers
+                    .entries
+                    .insert(def.id.to_string(), json_val.to_string());
             }
         }
     }
@@ -49,9 +65,12 @@ impl UserSession {
 
         for def in registry.all() {
             if def.hooks.contains(&name) {
-                let default_json = serde_json::Value::Null;
-                let json_val = self.modifiers.entries.get(def.id).unwrap_or(&default_json);
-                hook_arg = (def.dispatch_hook)(json_val, self, hook_arg);
+                let default_str = "null".to_string();
+                let json_str = self.modifiers.entries.get(def.id).unwrap_or(&default_str);
+                let json_val: serde_json::Value =
+                    serde_json::from_str(json_str).unwrap_or(serde_json::Value::Null);
+
+                hook_arg = (def.dispatch_hook)(&json_val, self, hook_arg);
             }
         }
 
@@ -59,96 +78,115 @@ impl UserSession {
     }
 }
 
+// Global static model definitions registry required by native_db 0.8
+static MODELS: OnceLock<Models> = OnceLock::new();
+
+fn get_models() -> Result<&'static Models, db_type::Error> {
+    if let Some(models) = MODELS.get() {
+        return Ok(models);
+    }
+    let mut models = Models::new();
+    models.define::<UserSession>()?;
+    let _ = MODELS.set(models);
+    Ok(MODELS.get().unwrap())
+}
+
 #[derive(Clone)]
 pub struct SessionManager {
-    pool: SqlitePool,
-    locks: Arc<Mutex<HashMap<u64, Arc<AsyncMutex<()>>>>>,
+    db: Arc<Database<'static>>,
+    cache: Cache<u64, Arc<UserSession>>,
+    striped_locks: Arc<[AsyncMutex<()>; LOCK_STRIPES]>,
 }
 
 impl SessionManager {
-    pub async fn new(database_path: &str) -> Result<Self, sqlx::Error> {
-        let pool = if database_path == ":memory:" {
-            let options = SqliteConnectOptions::new()
-                .filename(":memory:")
-                .create_if_missing(true);
-            sqlx::sqlite::SqlitePoolOptions::new()
-                .max_connections(1)
-                .connect_with(options)
-                .await?
+    pub fn new(database_path: &str) -> anyhow::Result<Self> {
+        let models = get_models().map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let builder = Builder::new();
+
+        let db = if database_path == ":memory:" {
+            builder.create_in_memory(models)?
         } else {
-            let options = SqliteConnectOptions::new()
-                .filename(database_path)
-                .create_if_missing(true)
-                .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-                .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
-            sqlx::sqlite::SqlitePoolOptions::new()
-                .max_connections(10)
-                .connect_with(options)
-                .await?
+            let path = std::path::Path::new(database_path);
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent)?;
+                }
+            }
+
+            if path.exists() {
+                builder.open(models, path)?
+            } else {
+                builder.create(models, path)?
+            }
         };
 
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS sessions (
-                user_id INTEGER PRIMARY KEY,
-                data TEXT NOT NULL
-            );",
-        )
-        .execute(&pool)
-        .await?;
+        let cache = Cache::builder()
+            .max_capacity(10_000)
+            .time_to_idle(Duration::from_secs(15 * 60))
+            .build();
+
+        let striped_locks = Arc::new(std::array::from_fn(|_| AsyncMutex::new(())));
 
         Ok(Self {
-            pool,
-            locks: Arc::new(Mutex::new(HashMap::new())),
+            db: Arc::new(db),
+            cache,
+            striped_locks,
         })
     }
 
-    fn user_lock(&self, user_id: u64) -> Arc<AsyncMutex<()>> {
-        self.locks
-            .lock()
-            .unwrap()
-            .entry(user_id)
-            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
-            .clone()
+    #[inline]
+    fn get_user_lock(&self, user_id: u64) -> &AsyncMutex<()> {
+        &self.striped_locks[(user_id as usize) % LOCK_STRIPES]
     }
 
-    pub async fn get_session(&self, user_id: u64) -> Result<UserSession, sqlx::Error> {
-        let row: Option<(String,)> = sqlx::query_as("SELECT data FROM sessions WHERE user_id = ?")
-            .bind(user_id as i64)
-            .fetch_optional(&self.pool)
-            .await?;
+    pub async fn get_session(&self, user_id: u64) -> anyhow::Result<UserSession> {
+        // 1. Fast L1 Memory Cache hit
+        if let Some(session) = self.cache.get(&user_id).await {
+            return Ok((*session).clone());
+        }
 
-        match row {
-            Some((json_str,)) => {
-                let session = serde_json::from_str(&json_str).unwrap_or_default();
-                Ok(session)
-            }
-            None => Ok(UserSession {
+        // 2. Direct typed read from native_db with resilient fallback
+        let r = self.db.r_transaction()?;
+        let session = match r.get().primary(user_id) {
+            Ok(Some(s)) => s,
+            Ok(None) => UserSession {
                 user_id,
                 ..Default::default()
-            }),
-        }
+            },
+            Err(e) => {
+                log::warn!(
+                    "Corrupted or incompatible session for user {user_id}: {e:?}. Resetting to default."
+                );
+                UserSession {
+                    user_id,
+                    ..Default::default()
+                }
+            }
+        };
+
+        // 3. Populate L1 Cache
+        self.cache.insert(user_id, Arc::new(session.clone())).await;
+
+        Ok(session)
     }
 
-    pub async fn save_session(&self, session: &UserSession) -> Result<(), sqlx::Error> {
-        let data = serde_json::to_string(session).unwrap();
+    pub async fn save_session(&self, session: &UserSession) -> anyhow::Result<()> {
+        self.cache
+            .insert(session.user_id, Arc::new(session.clone()))
+            .await;
 
-        sqlx::query(
-            "INSERT INTO sessions (user_id, data) VALUES (?, ?)
-             ON CONFLICT(user_id) DO UPDATE SET data = excluded.data;",
-        )
-        .bind(session.user_id as i64)
-        .bind(data)
-        .execute(&self.pool)
-        .await?;
+        let rw = self.db.rw_transaction()?;
+        rw.upsert(session.clone())?;
+        rw.commit()?;
 
         Ok(())
     }
 
-    pub async fn mutate_session<F, R>(&self, user_id: u64, f: F) -> Result<R, sqlx::Error>
+    pub async fn mutate_session<F, R>(&self, user_id: u64, f: F) -> anyhow::Result<R>
     where
         F: FnOnce(&mut UserSession) -> R,
     {
-        let lock = self.user_lock(user_id);
+        let lock = self.get_user_lock(user_id);
         let _guard = lock.lock().await;
 
         let mut session = self.get_session(user_id).await?;
@@ -158,7 +196,7 @@ impl SessionManager {
     }
 
     #[allow(dead_code)]
-    pub async fn fire_trigger(&self, user_id: u64, name: &str) -> Result<(), sqlx::Error> {
+    pub async fn fire_trigger(&self, user_id: u64, name: &str) -> anyhow::Result<()> {
         self.mutate_session(user_id, |session| {
             session.fire_trigger(name);
         })
@@ -166,21 +204,14 @@ impl SessionManager {
     }
 
     #[allow(dead_code)]
-    pub async fn fire_hook<T: Default>(&self, user_id: u64, name: &str) -> Result<T, sqlx::Error> {
+    pub async fn fire_hook<T: Default>(&self, user_id: u64, name: &str) -> anyhow::Result<T> {
         let session = self.get_session(user_id).await?;
-        let value = session.fire_hook(name, T::default());
-        Ok(value)
+        Ok(session.fire_hook(name, T::default()))
     }
 
     #[allow(dead_code)]
-    pub async fn fire_hook_with<T>(
-        &self,
-        user_id: u64,
-        name: &str,
-        value: T,
-    ) -> Result<T, sqlx::Error> {
+    pub async fn fire_hook_with<T>(&self, user_id: u64, name: &str, value: T) -> anyhow::Result<T> {
         let session = self.get_session(user_id).await?;
-        let value = session.fire_hook(name, value);
-        Ok(value)
+        Ok(session.fire_hook(name, value))
     }
 }

@@ -1,11 +1,12 @@
+use serde::{Deserialize, Serialize};
 use teloxide::types::{FileId, InputFile};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedImage {
     state: CachedImageState,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum CachedImageState {
     Pending {
         bytes: bytes::Bytes,

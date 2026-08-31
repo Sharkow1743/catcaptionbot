@@ -236,24 +236,30 @@ pub fn warn_once(kind: &str, name: &str) {
 }
 
 // -----------------------------------------------------------------------------
-// ModifierBag Helpers
+// ModifierBag Helpers (Binary-safe with HashMap<String, String>)
 // -----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModifierBag {
-    pub entries: HashMap<String, serde_json::Value>,
+    pub entries: HashMap<String, String>,
 }
 
 impl ModifierBag {
     pub fn active_displays(&self) -> Vec<String> {
         let registry = ModifierRegistry::global();
         let mut displays = Vec::new();
-        let default_json = serde_json::Value::Null;
 
         for def in registry.all() {
-            let json_val = self.entries.get(def.id).unwrap_or(&default_json);
-            if (def.is_active)(json_val) {
-                let text = (def.display)(json_val);
+            let json_str = self
+                .entries
+                .get(def.id)
+                .map(|s| s.as_str())
+                .unwrap_or("null");
+            let json_val: serde_json::Value =
+                serde_json::from_str(json_str).unwrap_or(serde_json::Value::Null);
+
+            if (def.is_active)(&json_val) {
+                let text = (def.display)(&json_val);
                 if !text.is_empty() {
                     displays.push(text);
                 }
@@ -273,19 +279,30 @@ impl ModifierBag {
             return false;
         };
 
-        let default_json = serde_json::Value::Null;
-        let json_val = self.entries.get(def.id).unwrap_or(&default_json);
-        (def.is_active)(json_val)
+        let json_str = self
+            .entries
+            .get(def.id)
+            .map(|s| s.as_str())
+            .unwrap_or("null");
+        let json_val: serde_json::Value =
+            serde_json::from_str(json_str).unwrap_or(serde_json::Value::Null);
+        (def.is_active)(&json_val)
     }
 
     pub fn active_ids(&self) -> Vec<&'static str> {
         let registry = ModifierRegistry::global();
         let mut ids = Vec::new();
-        let default_json = serde_json::Value::Null;
 
         for def in registry.all() {
-            let json_val = self.entries.get(def.id).unwrap_or(&default_json);
-            if (def.is_active)(json_val) {
+            let json_str = self
+                .entries
+                .get(def.id)
+                .map(|s| s.as_str())
+                .unwrap_or("null");
+            let json_val: serde_json::Value =
+                serde_json::from_str(json_str).unwrap_or(serde_json::Value::Null);
+
+            if (def.is_active)(&json_val) {
                 ids.push(def.id);
             }
         }

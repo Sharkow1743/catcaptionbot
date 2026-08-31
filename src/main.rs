@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
         WordGenerator::new_with_local_model(&config.words_db_path, &config.model_dir).await?;
     let composer = TextComposer::new(morpher, word_generator);
 
-    let session_manager = SessionManager::new(&config.app_db_path).await?;
+    let session_manager = SessionManager::new(&config.app_db_path)?;
 
     let app_state = AppState {
         composer,
