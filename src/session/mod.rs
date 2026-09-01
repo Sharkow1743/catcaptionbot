@@ -29,6 +29,18 @@ pub struct UserSession {
 }
 
 impl UserSession {
+    pub fn new(user_id: u64) -> Self {
+        Self {
+            user_id,
+            inventory: Inventory::default()
+                .with_category("equip", 1)
+                .with_category("inventory", 3),
+            rolls: CappedBuffer::default(),
+            between_rolls: CappedBuffer::default(),
+            modifiers: ModifierBag::default(),
+        }
+    }
+
     pub fn fire_trigger(&mut self, name: &str) {
         let registry = ModifierRegistry::global();
         if !registry.known_triggers.contains(name) {
@@ -140,33 +152,23 @@ impl SessionManager {
     }
 
     pub async fn get_session(&self, user_id: u64) -> anyhow::Result<UserSession> {
-        // 1. Fast L1 Memory Cache hit
         if let Some(session) = self.cache.get(&user_id).await {
             return Ok((*session).clone());
         }
 
-        // 2. Direct typed read from native_db with resilient fallback
         let r = self.db.r_transaction()?;
         let session = match r.get().primary(user_id) {
             Ok(Some(s)) => s,
-            Ok(None) => UserSession {
-                user_id,
-                ..Default::default()
-            },
+            Ok(None) => UserSession::new(user_id),
             Err(e) => {
                 log::warn!(
                     "Corrupted or incompatible session for user {user_id}: {e:?}. Resetting to default."
                 );
-                UserSession {
-                    user_id,
-                    ..Default::default()
-                }
+                UserSession::new(user_id)
             }
         };
 
-        // 3. Populate L1 Cache
         self.cache.insert(user_id, Arc::new(session.clone())).await;
-
         Ok(session)
     }
 
