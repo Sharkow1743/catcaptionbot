@@ -3,6 +3,9 @@ name = "catsbot"
 version = "0.1.0"
 edition = "2024"
 
+[profile.release]
+lto = true
+
 [dependencies]
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros"] }
 teloxide = { version = "0.17", features = ["full"] }
