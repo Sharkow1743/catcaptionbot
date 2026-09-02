@@ -11,3 +11,4 @@ robert-tiny2/
 *.db-wal
 *.db-shm
 placeholder.jpg
+old/
