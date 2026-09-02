@@ -1,5 +1,9 @@
+use std::sync::Arc;
+
 use reqwest::Client;
+use teloxide::types::FileId;
 use teloxide::{dispatching::dialogue::InMemStorage, prelude::*};
+use tokio::sync::RwLock;
 
 use crate::session::SessionManager;
 use crate::text::TextComposer;
@@ -19,6 +23,7 @@ pub struct AppState {
     pub client: Client,
     pub session_manager: SessionManager,
     pub config: Config,
+    pub placeholder_file_id: Arc<RwLock<Option<FileId>>>,
 }
 
 #[derive(Debug, Clone)]

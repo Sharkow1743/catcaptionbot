@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use teloxide::types::{FileId, InputFile};
+use teloxide::types::{FileId, InputFile, InputMedia, InputMediaPhoto};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedImage {
@@ -49,6 +49,8 @@ impl CachedImage {
     }
 }
 
+// --- InputFile conversions ---
+
 impl From<CachedImage> for InputFile {
     fn from(img: CachedImage) -> Self {
         match img.state {
@@ -76,5 +78,33 @@ impl From<&CachedImage> for InputFile {
                 input
             }
         }
+    }
+}
+
+// --- InputMediaPhoto conversions ---
+
+impl From<CachedImage> for InputMediaPhoto {
+    fn from(img: CachedImage) -> Self {
+        InputMediaPhoto::new(InputFile::from(img))
+    }
+}
+
+impl From<&CachedImage> for InputMediaPhoto {
+    fn from(img: &CachedImage) -> Self {
+        InputMediaPhoto::new(InputFile::from(img))
+    }
+}
+
+// --- InputMedia conversions ---
+
+impl From<CachedImage> for InputMedia {
+    fn from(img: CachedImage) -> Self {
+        InputMedia::Photo(InputMediaPhoto::from(img))
+    }
+}
+
+impl From<&CachedImage> for InputMedia {
+    fn from(img: &CachedImage) -> Self {
+        InputMedia::Photo(InputMediaPhoto::from(img))
     }
 }

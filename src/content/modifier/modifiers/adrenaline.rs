@@ -4,6 +4,7 @@ use skia_rs_codec::Image;
 use skia_rs_core::{Color, Color4f, IRect, Point, Rect};
 use skia_rs_paint::RadialGradient;
 use skia_rs_paint::{Paint, Style, TileMode};
+use std::f32;
 use std::sync::Arc;
 
 use crate::content::modifier::{HookArg, Modifier};
@@ -195,7 +196,11 @@ impl Modifier for Adrenaline {
         match name {
             "on_roll" => {
                 let latest_wait = session.between_rolls.get_latest().copied().unwrap_or(0);
-                let t = (latest_wait as f32 / 1000.0).max(0.0);
+                let t = if latest_wait != 0 {
+                    (latest_wait as f32 / 1000.0).max(0.0)
+                } else {
+                    f32::MAX
+                };
 
                 // --- 1. CONTINUOUS NATURAL TIME DECAY ---
                 let decay_rate = if t > 3.5 {

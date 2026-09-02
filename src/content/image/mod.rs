@@ -65,9 +65,10 @@ async fn cache_bytes(bytes: Bytes) {
 
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
-    let hash = hex::encode(hasher.finalize());
+    let hash = hasher.finalize();
+    let hash_hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
 
-    let filename = format!("{}.{}", &hash[..16], "jpg");
+    let filename = format!("{}.jpg", &hash_hex[..16]);
     let filepath = cache_dir.join(filename);
 
     if !filepath.exists() {
@@ -94,7 +95,6 @@ async fn load_random_cached() -> anyhow::Result<Bytes> {
             files.push(path);
         }
     }
-
 
     if files.is_empty() {
         log::error!("Fallback image cache is empty, no image can be served");

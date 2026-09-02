@@ -17,7 +17,7 @@ use image::edit::{preprocess_image, process_image};
 use image::fetch_image;
 use rarity::{Rarity, RarityManager};
 
-pub use types::Content;
+pub use types::{CachedImage, Content};
 
 mod image;
 pub mod inventory;

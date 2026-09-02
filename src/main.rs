@@ -9,12 +9,13 @@ mod state;
 mod text;
 mod utils;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use commands::{Command, handle_help, handle_start};
 use content::content_queue;
-use controls::handle_keyboard_callback;
 use controls::kb_command::UpdateKbExt;
+use controls::{handle_inline_callback, handle_keyboard_callback};
 use session::SessionManager;
 use state::{AppState, Config, State};
 use text::WordGenerator;
@@ -66,6 +67,7 @@ async fn main() -> anyhow::Result<()> {
         client,
         session_manager,
         config,
+        placeholder_file_id: Arc::new(tokio::sync::RwLock::new(None)),
     };
 
     let content_queue = content_queue(app_state.clone()).await;
@@ -81,17 +83,31 @@ async fn main() -> anyhow::Result<()> {
                 .branch(dptree::case![Command::Start(string)].endpoint(handle_start))
                 .branch(dptree::case![Command::Help].endpoint(handle_help)),
         )
-        .branch(Update::filter_kb_callback().endpoint(handle_keyboard_callback));
+        .branch(Update::filter_kb_callback().endpoint(handle_keyboard_callback))
+        .branch(Update::filter_callback_query().endpoint(handle_inline_callback));
 
     let dispatcher = Dispatcher::builder(bot, handler).dependencies(deps![
         InMemStorage::<State>::new(),
-        app_state,
+        app_state.clone(),
         content_queue
     ]);
+
+    #[cfg(not(debug_assertions))]
+    let mut dispatcher = dispatcher.enable_ctrlc_handler().build();
+
+    #[cfg(debug_assertions)]
+    let mut dispatcher = dispatcher.build();
+
+    dispatcher.dispatch().await;
+
+    // Flush dirty queued sessions only when running in release profile
     #[cfg(not(debug_assertions))]
     {
-        let dispatcher = dispatcher.enable_ctrlc_handler();
+        log::info!("Shutting down");
+        if let Err(e) = app_state.session_manager.flush().await {
+            log::error!("Error flushing session queue during shutdown: {e:?}");
+        }
     }
-    dispatcher.build().dispatch().await;
+
     Ok(())
 }

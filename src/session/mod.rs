@@ -1,30 +1,63 @@
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
+use bonsaidb::core::schema::{Collection, SerializedCollection};
+use bonsaidb::local::AsyncDatabase;
+use bonsaidb::local::config::{Builder, StorageConfiguration};
 use moka::future::Cache;
-use native_db::*;
-use native_model::{Model, native_model};
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex as AsyncMutex;
+use teloxide::types::MessageId;
+use tokio::sync::{Mutex as AsyncMutex, Notify};
 
+use crate::content::Content;
 use crate::content::inventory::Inventory;
 use crate::content::modifier::{HookArg, ModifierBag, ModifierRegistry, warn_once};
 use crate::utils::CappedBuffer;
 
 const LOCK_STRIPES: usize = 256;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[native_model(id = 1, version = 1)]
-#[native_db]
-pub struct UserSession {
-    #[primary_key]
-    pub user_id: u64,
+// =========================================================================
+// 1. Persistent Profile (Saved to Database)
+// =========================================================================
 
+#[derive(Debug, Clone, Serialize, Deserialize, Collection, Default)]
+#[collection(name = "user-profiles", primary_key = u64)]
+pub struct UserProfile {
+    #[natural_id]
+    pub user_id: u64,
+    pub modifiers: ModifierBag,
+    pub inventory: Inventory,
+}
+
+// =========================================================================
+// 2. Ephemeral In-Memory Stats (Never touches Disk)
+// =========================================================================
+
+#[derive(Debug, Clone, Default)]
+pub struct EphemeralStats {
     pub rolls: CappedBuffer<i64>,
     pub between_rolls: CappedBuffer<i64>,
-    pub modifiers: ModifierBag,
+    pub last_roll_msg_id: Option<MessageId>,
+    pub last_content: Option<Content>,
+}
 
-    #[serde(default)]
+// =========================================================================
+// 3. Combined Active Session Representation
+// =========================================================================
+
+#[derive(Debug, Clone, Default)]
+pub struct UserSession {
+    pub user_id: u64,
+
+    // Ephemeral stats (in-memory only)
+    pub rolls: CappedBuffer<i64>,
+    pub between_rolls: CappedBuffer<i64>,
+    pub last_roll_msg_id: Option<MessageId>,
+    pub last_content: Option<Content>,
+
+    // Persistent attributes
+    pub modifiers: ModifierBag,
     pub inventory: Inventory,
 }
 
@@ -38,7 +71,24 @@ impl UserSession {
             rolls: CappedBuffer::default(),
             between_rolls: CappedBuffer::default(),
             modifiers: ModifierBag::default(),
+            last_roll_msg_id: None,
+            last_content: None,
         }
+    }
+
+    pub fn to_profile(&self) -> UserProfile {
+        UserProfile {
+            user_id: self.user_id,
+            modifiers: self.modifiers.clone(),
+            inventory: self.inventory.clone(),
+        }
+    }
+
+    pub fn from_profile(profile: UserProfile) -> Self {
+        let mut session = Self::new(profile.user_id);
+        session.modifiers = profile.modifiers;
+        session.inventory = profile.inventory;
+        session
     }
 
     pub fn fire_trigger(&mut self, name: &str) {
@@ -90,33 +140,23 @@ impl UserSession {
     }
 }
 
-// Global static model definitions registry required by native_db 0.8
-static MODELS: OnceLock<Models> = OnceLock::new();
-
-fn get_models() -> Result<&'static Models, db_type::Error> {
-    if let Some(models) = MODELS.get() {
-        return Ok(models);
-    }
-    let mut models = Models::new();
-    models.define::<UserSession>()?;
-    let _ = MODELS.set(models);
-    Ok(MODELS.get().unwrap())
-}
+// =========================================================================
+// 4. Session Manager with Write-Behind Queue
+// =========================================================================
 
 #[derive(Clone)]
 pub struct SessionManager {
-    db: Arc<Database<'static>>,
+    db: AsyncDatabase,
     cache: Cache<u64, Arc<UserSession>>,
     striped_locks: Arc<[AsyncMutex<()>; LOCK_STRIPES]>,
+    pending_writes: Arc<AsyncMutex<HashMap<u64, UserProfile>>>,
+    flush_notify: Arc<Notify>,
 }
 
 impl SessionManager {
     pub fn new(database_path: &str) -> anyhow::Result<Self> {
-        let models = get_models().map_err(|e| anyhow::anyhow!("{e:?}"))?;
-        let builder = Builder::new();
-
-        let db = if database_path == ":memory:" {
-            builder.create_in_memory(models)?
+        let storage_config = if database_path == ":memory:" {
+            StorageConfiguration::new("memory.bonsaidb").memory_only()
         } else {
             let path = std::path::Path::new(database_path);
             if let Some(parent) = path.parent() {
@@ -124,13 +164,10 @@ impl SessionManager {
                     std::fs::create_dir_all(parent)?;
                 }
             }
-
-            if path.exists() {
-                builder.open(models, path)?
-            } else {
-                builder.create(models, path)?
-            }
+            StorageConfiguration::new(path)
         };
+
+        let db = bonsaidb::local::Database::open::<UserProfile>(storage_config)?.into_async();
 
         let cache = Cache::builder()
             .max_capacity(10_000)
@@ -138,11 +175,36 @@ impl SessionManager {
             .build();
 
         let striped_locks = Arc::new(std::array::from_fn(|_| AsyncMutex::new(())));
+        let pending_writes = Arc::new(AsyncMutex::new(HashMap::new()));
+        let flush_notify = Arc::new(Notify::new());
+
+        // Spawn background worker for debounced disk persistence
+        {
+            let db = db.clone();
+            let pending_writes = pending_writes.clone();
+            let flush_notify = flush_notify.clone();
+
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = flush_notify.notified() => {
+                            // Small debounce window to batch rapid successive clicks
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        }
+                        _ = tokio::time::sleep(Duration::from_secs(3)) => {}
+                    }
+
+                    Self::flush_pending(&db, &pending_writes).await;
+                }
+            });
+        }
 
         Ok(Self {
-            db: Arc::new(db),
+            db,
             cache,
             striped_locks,
+            pending_writes,
+            flush_notify,
         })
     }
 
@@ -156,13 +218,17 @@ impl SessionManager {
             return Ok((*session).clone());
         }
 
-        let r = self.db.r_transaction()?;
-        let session = match r.get().primary(user_id) {
-            Ok(Some(s)) => s,
+        // Cache miss: load persistent profile from database
+        let session = match UserProfile::get_async(&user_id, &self.db).await {
+            Ok(Some(doc)) => {
+                let mut profile = doc.contents;
+                profile.user_id = user_id;
+                UserSession::from_profile(profile)
+            }
             Ok(None) => UserSession::new(user_id),
             Err(e) => {
                 log::warn!(
-                    "Corrupted or incompatible session for user {user_id}: {e:?}. Resetting to default."
+                    "Failed to retrieve profile for user {user_id}: {e:?}. Resetting to default."
                 );
                 UserSession::new(user_id)
             }
@@ -172,14 +238,17 @@ impl SessionManager {
         Ok(session)
     }
 
+    /// Updates memory cache instantly and queues profile for write-behind persistence.
     pub async fn save_session(&self, session: &UserSession) -> anyhow::Result<()> {
         self.cache
             .insert(session.user_id, Arc::new(session.clone()))
             .await;
 
-        let rw = self.db.rw_transaction()?;
-        rw.upsert(session.clone())?;
-        rw.commit()?;
+        {
+            let mut pending = self.pending_writes.lock().await;
+            pending.insert(session.user_id, session.to_profile());
+        }
+        self.flush_notify.notify_one();
 
         Ok(())
     }
@@ -195,6 +264,36 @@ impl SessionManager {
         let result = f(&mut session);
         self.save_session(&session).await?;
         Ok(result)
+    }
+
+    async fn flush_pending(
+        db: &AsyncDatabase,
+        pending_writes: &AsyncMutex<HashMap<u64, UserProfile>>,
+    ) {
+        let batch: Vec<UserProfile> = {
+            let mut pending = pending_writes.lock().await;
+            if pending.is_empty() {
+                return;
+            }
+            pending.drain().map(|(_, p)| p).collect()
+        };
+
+        for profile in batch {
+            if let Err(e) =
+                UserProfile::overwrite_async(&profile.user_id, profile.clone(), db).await
+            {
+                log::error!(
+                    "Failed to persist profile for user {}: {e:?}",
+                    profile.user_id
+                );
+            }
+        }
+    }
+
+    /// Flushes all queued writes to disk immediately.
+    pub async fn flush(&self) -> anyhow::Result<()> {
+        Self::flush_pending(&self.db, &self.pending_writes).await;
+        Ok(())
     }
 
     #[allow(dead_code)]

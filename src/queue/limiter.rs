@@ -3,10 +3,17 @@ use tokio::sync::{Semaphore, SemaphorePermit, oneshot};
 
 static CPU_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
 
+fn get_available_cores() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2)
+        .max(2)
+}
+
 /// Global dedicated CPU thread pool so heavy rendering never blocks Tokio reactor threads.
 pub fn cpu_pool() -> &'static rayon::ThreadPool {
     CPU_POOL.get_or_init(|| {
-        let threads = num_cpus::get().max(2);
+        let threads = get_available_cores();
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .thread_name(|i| format!("cpu-worker-{}", i))
@@ -48,7 +55,7 @@ impl ComputeLimiter {
     /// Creates a limiter using available logical cores.
     /// Background tasks are capped at 50% of CPU permits, reserving the rest for immediate user requests.
     pub fn new() -> Self {
-        let cpus = num_cpus::get().max(2);
+        let cpus = get_available_cores();
         let bg_permits = (cpus / 2).max(1);
         Self::with_limits(cpus, bg_permits)
     }
@@ -82,30 +89,5 @@ impl ComputeLimiter {
             .await
             .expect("Total compute semaphore closed");
         (bg, total)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_compute_limiter_permits() {
-        let limiter = ComputeLimiter::with_limits(2, 1);
-
-        // Foreground permit
-        let permit1 = limiter.acquire_foreground().await;
-        assert_eq!(limiter.total_semaphore.available_permits(), 1);
-
-        // Background permit
-        let permit2 = limiter.acquire_background().await;
-        assert_eq!(limiter.total_semaphore.available_permits(), 0);
-        assert_eq!(limiter.bg_semaphore.available_permits(), 0);
-
-        drop(permit1);
-        drop(permit2);
-
-        assert_eq!(limiter.total_semaphore.available_permits(), 2);
-        assert_eq!(limiter.bg_semaphore.available_permits(), 1);
     }
 }

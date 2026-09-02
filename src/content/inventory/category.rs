@@ -1,14 +1,16 @@
+// src/content/inventory/category.rs
+
 use serde::{Deserialize, Serialize};
 
 use super::inventory::Slot;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Category(Box<[Option<Slot>]>);
+pub struct Category(Vec<Option<Slot>>);
 
 impl Category {
     #[allow(dead_code)]
     pub fn new(size: usize) -> Self {
-        Self(vec![None; size].into_boxed_slice())
+        Self(vec![None; size])
     }
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
@@ -53,8 +55,6 @@ impl Category {
     }
     #[allow(dead_code)]
     pub fn expand(&mut self, additional_slots: usize) {
-        let mut new_vec = self.0.to_vec();
-        new_vec.resize(new_vec.len() + additional_slots, None);
-        self.0 = new_vec.into_boxed_slice();
+        self.0.extend(vec![None; additional_slots]);
     }
 }
