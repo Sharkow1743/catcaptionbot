@@ -10,5 +10,7 @@ robert-tiny2/
 .image_cache/
 *.db-wal
 *.db-shm
-placeholder.jpg
+*.jpg
+*.svg
 old/
+words.txt

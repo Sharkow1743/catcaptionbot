@@ -139,13 +139,8 @@ Battles **must reset all modifiers to a clean baseline at battle start**, regard
 
  # TODO
 
-- **Complete `take_cat` Callback Handler (`controls/mod.rs`)**
-  - Resolve message / chat ID properly from `CallbackQuery`.
-  - Push the cat `Slot` into the session inventory (`"equip"` / `"inventory"`).
-  - Fire `"on_cat_catch"` trigger.
-  - Handle full inventory / failure feedback (alert via `answer_callback_query`).
-  - Remove/edit inline markup after successful pickup to prevent duplicate claims.
-- **Create asset system**
-  - Create registry for static cached assets
-  - Register placeholder, cat escape images
-  - Make all code that uses static assets use assets manager
+- **Complete inventory system**
+  - Create inventory menu
+  - Implement inventory managment
+- **Refctor controls module**
+  - Refactor functions: split them and make code cleaner

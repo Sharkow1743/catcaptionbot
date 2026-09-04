@@ -1,3 +1,4 @@
+mod assets;
 mod commands;
 mod content;
 mod controls;
@@ -9,9 +10,9 @@ mod state;
 mod text;
 mod utils;
 
-use std::sync::Arc;
 use std::time::Duration;
 
+use assets::AssetManager;
 use commands::{Command, handle_help, handle_start};
 use content::content_queue;
 use controls::kb_command::UpdateKbExt;
@@ -62,12 +63,25 @@ async fn main() -> anyhow::Result<()> {
 
     let session_manager = SessionManager::new(&config.app_db_path)?;
 
+    // Register application assets
+    let asset_manager = AssetManager::new();
+    asset_manager.register_static(
+        "placeholder",
+        include_bytes!("../placeholder.jpg"),
+        "placeholder.jpg",
+    );
+    asset_manager.register_static(
+        "missing_cat",
+        include_bytes!("../missing_cat.jpg"),
+        "missing_cat.jpg",
+    );
+
     let app_state = AppState {
         composer,
         client,
         session_manager,
         config,
-        placeholder_file_id: Arc::new(tokio::sync::RwLock::new(None)),
+        asset_manager,
     };
 
     let content_queue = content_queue(app_state.clone()).await;

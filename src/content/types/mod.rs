@@ -1,9 +1,9 @@
-use super::rarity::{Rarity, RarityManager};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::sync::Arc;
 
-mod cached_image;
-pub use cached_image::CachedImage;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+use super::rarity::{Rarity, RarityManager};
+pub use crate::assets::CachedImage;
 
 #[derive(Clone)]
 pub struct Content {
@@ -34,7 +34,6 @@ impl Content {
     }
 }
 
-// Database representation: Saves ID instead of `dyn Trait`
 #[derive(Serialize, Deserialize)]
 struct ContentData<'a> {
     image: std::borrow::Cow<'a, CachedImage>,
@@ -63,7 +62,6 @@ impl<'de> Deserialize<'de> for Content {
     {
         let data = ContentData::deserialize(deserializer)?;
 
-        // Find Rarity object from ID, fallback to random if ID was deleted from source
         let rarity = RarityManager::global()
             .get_by_id(&data.rarity_id)
             .unwrap_or_else(|| RarityManager::global().pick().unwrap());
@@ -76,7 +74,6 @@ impl<'de> Deserialize<'de> for Content {
     }
 }
 
-// Add simple debug manually since Rarity is a trait object
 impl std::fmt::Debug for Content {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Content")
