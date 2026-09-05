@@ -139,5 +139,4 @@ Battles **must reset all modifiers to a clean baseline at battle start**, regard
 
  # TODO
 
-- **Complete inventory system**
-  - Refactor controls/inventory
+- implement loyality system and its modifier
