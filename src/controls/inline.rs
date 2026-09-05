@@ -1,27 +1,25 @@
 use teloxide::prelude::*;
 use teloxide::types::CallbackQuery;
 
+use crate::controls::inventory::handle_inventory_callback;
 use crate::controls::take::handle_take_cat;
 use crate::session::UserSession;
-use crate::state::{AppState, HandlerResult};
+use crate::state::{AppState, DialogueState, HandlerResult};
 
-/// Handles inline-keyboard callbacks. Inventory browsing doesn't use inline
-/// keyboards at all (see `controls::inventory`) — this is only for the
-/// transient "take the cat" button attached to a freshly rolled photo.
 pub async fn handle_inline_callback(
     bot: Bot,
     q: CallbackQuery,
     app_state: AppState,
+    dialogue: DialogueState,
     mut session: UserSession,
 ) -> HandlerResult {
     let Some(data) = &q.data else {
         return Ok(());
     };
 
-    let _ = bot.answer_callback_query(q.id.clone()).await;
-
-    let Some(message) = q.message else {
+    let Some(message) = &q.message else {
         log::warn!("Received callback query without message context");
+        let _ = bot.answer_callback_query(q.id.clone()).await;
         return Ok(());
     };
 
@@ -29,11 +27,25 @@ pub async fn handle_inline_callback(
     let msg_id = message.id();
 
     if data == "take_cat" {
+        let _ = bot.answer_callback_query(q.id.clone()).await;
         handle_take_cat(&mut session, bot, chat_id, msg_id, &app_state.asset_manager).await;
+        app_state.session_manager.save_session(&session).await?;
+    } else if data.starts_with("inv:") {
+        handle_inventory_callback(
+            bot,
+            q.clone(),
+            chat_id,
+            msg_id,
+            data,
+            app_state,
+            dialogue,
+            session,
+        )
+        .await?;
     } else {
+        let _ = bot.answer_callback_query(q.id.clone()).await;
         log::warn!("Unhandled callback query data: {data}");
     }
 
-    app_state.session_manager.save_session(&session).await?;
     Ok(())
 }

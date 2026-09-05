@@ -61,21 +61,29 @@ pub async fn serve_cat_roll(
         .await?;
 
     // 4. Request and generate content
+    let content_fetch_time = Instant::now();
+
     let mut content = content_queue
         .request(session.user_id, session.clone())
         .await??;
     let image = content.image_mut();
 
+    let content_fetch_time = content_fetch_time.elapsed();
+
     // 5. Update placeholder with generated image & inline actions
+    let content_send_time = Instant::now();
+
     let msg_meta = bot
         .edit_message_media(msg.chat.id, msg_meta.id, image.clone().into())
         .reply_markup(cat_inline_keyboard())
         .await?;
 
     stats!(
-        "Served content in {:?}\nAcknowledge response: {:?}",
+        "Served content in {:?}\nAcknowledge response: {:?}\nFetch: {:?}\nContent send: {:?}",
         serve_time.elapsed(),
-        first_response_time
+        first_response_time,
+        content_fetch_time,
+        content_send_time.elapsed()
     );
 
     // 6. Cache file ID for newly uploaded content
