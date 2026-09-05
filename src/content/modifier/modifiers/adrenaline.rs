@@ -203,10 +203,11 @@ impl Modifier for Adrenaline {
                 };
 
                 // --- 1. CONTINUOUS NATURAL TIME DECAY ---
+                // Decays based on actual elapsed time (t) since the last roll
                 let decay_rate = if t > 3.5 {
                     0.32 // Rapid dissipation if pausing / reading
                 } else if t > 1.8 {
-                    0.16 // Solid drag for normal casual play (1.8s - 2.5s drops you out of adrenaline)
+                    0.16 // Solid drag for normal casual play
                 } else {
                     0.08 // Base drag during fast mashing
                 };
@@ -222,22 +223,52 @@ impl Modifier for Adrenaline {
                     }
                 }
 
-                // --- 2. SPEED-BASED IMPULSE GAIN ---
-                // Calibrated to 0.566s engine minimum & cut off at 2.6s
+                // --- 2. CALCULATE HISTORICAL CADENCE (t_eff) ---
+                // Weight the last 5 rolls exponentially so sustained rhythm builds momentum
+                let (t_eff, recent_fast_count) = {
+                    let history: Vec<f32> = session
+                        .between_rolls
+                        .iter()
+                        .rev()
+                        .take(5)
+                        .map(|&w| (w as f32 / 1000.0).max(0.0))
+                        .collect();
+
+                    if history.is_empty() {
+                        (t, 0)
+                    } else {
+                        let mut weighted_sum = 0.0;
+                        let mut total_weight = 0.0;
+                        let mut weight = 1.0;
+                        let mut fast_count = 0;
+
+                        for &wait in &history {
+                            weighted_sum += wait * weight;
+                            total_weight += weight;
+                            weight *= 0.6; // Older rolls contribute progressively less
+
+                            if wait <= 1.8 {
+                                fast_count += 1;
+                            }
+                        }
+
+                        (weighted_sum / total_weight, fast_count)
+                    }
+                };
+
+                // --- 3. SPEED-BASED IMPULSE GAIN ---
                 if t <= 2.6 {
-                    // Steep non-linear impulse curve:
-                    // ~0.57s -> 1.00  (Machine limit -> full gain)
-                    // ~1.00s -> 0.56  (Tryhard mash -> strong gain, pushes 0.7 - 0.9)
-                    // ~1.50s -> 0.22  (Active edge -> balances around ~0.40)
-                    // ~2.00s -> 0.05  (Normal casual -> decays down to ~0.20)
-                    // >=2.60s -> 0.00 (Zero gain)
-                    let speed_factor = ((2.6 - t) / (2.6 - 0.566)).clamp(0.0, 1.0).powf(2.4);
+                    // Impulse factor now uses historical effective pacing (t_eff) instead of instant t
+                    let speed_factor = ((2.6 - t_eff) / (2.6 - 0.566)).clamp(0.0, 1.0).powf(2.4);
+
+                    // Streak Multiplier: Bonus gain for keeping a active streak (3+ fast rolls in window)
+                    let streak_bonus = if recent_fast_count >= 3 { 1.25 } else { 1.0 };
 
                     // Resistance: Exponential metabolic resistance to gaining more
                     let resistance = 1.0 / (1.0 + 2.0 * self.level.powi(2));
 
                     let base_impulse = 0.28;
-                    let gain = base_impulse * speed_factor * resistance;
+                    let gain = base_impulse * speed_factor * resistance * streak_bonus;
 
                     self.level = (self.level + gain).max(0.0);
                 }

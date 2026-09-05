@@ -15,14 +15,12 @@ pub async fn serve_cat_roll(
     msg: Message,
     bot: Bot,
     content_queue: KeyedBufferedQueue<u64, UserSession, anyhow::Result<Content>>,
-    session: UserSession,
+    mut session: UserSession,
     app_state: AppState,
 ) -> HandlerResult {
     let serve_time = Instant::now();
-    let user_id = session.user_id;
-    let now = unix_timestamp();
 
-    // 1. Send placeholder image via asset manager
+    // 1. Send placeholder image
     let placeholder_input = app_state.asset_manager.require("placeholder");
     let msg_meta = bot
         .send_photo(msg.chat.id, placeholder_input.into())
@@ -44,21 +42,13 @@ pub async fn serve_cat_roll(
     }
 
     // 3. Pre-roll session update
-    let session = app_state
-        .session_manager
-        .mutate_session(user_id, |session| {
-            let latest_roll = *session.rolls.get_latest().unwrap_or(&now);
-            let between_rolls = now - latest_roll;
-            notice!("Time between rolls: {between_rolls}ms");
-            session.between_rolls.push(between_rolls);
+    let now = unix_timestamp();
+    let latest_roll = *session.rolls.get_latest().unwrap_or(&now);
+    let between_rolls = now - latest_roll;
+    notice!("Time between rolls: {between_rolls}ms");
+    session.between_rolls.push(between_rolls);
 
-            session.fire_trigger("on_roll");
-            session.rolls.push(now);
-            session.last_roll_msg_id = Some(msg_meta.id);
-
-            session.clone()
-        })
-        .await?;
+    session.fire_trigger("on_roll");
 
     // 4. Request and generate content
     let content_fetch_time = Instant::now();
@@ -78,6 +68,8 @@ pub async fn serve_cat_roll(
         .reply_markup(cat_inline_keyboard())
         .await?;
 
+    let now = unix_timestamp();
+
     stats!(
         "Served content in {:?}\nAcknowledge response: {:?}\nFetch: {:?}\nContent send: {:?}",
         serve_time.elapsed(),
@@ -91,11 +83,13 @@ pub async fn serve_cat_roll(
         let img_id = first_photo.file.id.clone();
         image.set_file_id(img_id);
 
-        app_state
-            .session_manager
-            .mutate_session(user_id, |session| session.last_content = Some(content))
-            .await?;
+        session.last_content = Some(content);
     }
+
+    session.rolls.push(now);
+    session.last_roll_msg_id = Some(msg_meta.id);
+
+    app_state.session_manager.save_session(&session).await?;
 
     Ok(())
 }
