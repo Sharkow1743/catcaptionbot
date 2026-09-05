@@ -15,6 +15,7 @@ use std::time::Duration;
 use assets::AssetManager;
 use commands::{Command, handle_help, handle_start};
 use content::content_queue;
+use controls::handle_inventory_message;
 use controls::kb_command::UpdateKbExt;
 use controls::{handle_inline_callback, handle_keyboard_callback};
 use session::SessionManager;
@@ -97,8 +98,20 @@ async fn main() -> anyhow::Result<()> {
                 .branch(dptree::case![Command::Start(string)].endpoint(handle_start))
                 .branch(dptree::case![Command::Help].endpoint(handle_help)),
         )
-        .branch(Update::filter_kb_callback().endpoint(handle_keyboard_callback))
-        .branch(Update::filter_callback_query().endpoint(handle_inline_callback));
+        .branch(
+            dptree::case![State::Start]
+                .branch(Update::filter_kb_callback().endpoint(handle_keyboard_callback)),
+        )
+        .branch(
+            dptree::case![State::Inventory(view)]
+                .branch(Update::filter_message().endpoint(handle_inventory_message)),
+        )
+        .branch(Update::filter_callback_query().endpoint(handle_inline_callback))
+        .branch(
+            Update::filter_message()
+                .map(|| "".to_string())
+                .endpoint(handle_start),
+        );
 
     let dispatcher = Dispatcher::builder(bot, handler).dependencies(deps![
         InMemStorage::<State>::new(),

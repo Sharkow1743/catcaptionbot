@@ -1,6 +1,7 @@
 use super::state::{DialogueState, HandlerResult};
 
 use super::maybe_kb;
+use crate::controls::main_menu_keyboard;
 use teloxide::{prelude::*, utils::command::BotCommands};
 
 #[derive(BotCommands, Clone)]
@@ -19,9 +20,12 @@ pub async fn handle_start(
     _start: String,
 ) -> HandlerResult {
     dialogue.reset().await?;
-    let kb = dialogue.get_or_default().await?.keyboard();
     let welcome = "[START MESSAGE]";
-    maybe_kb!(bot.send_message(msg.chat.id, welcome), kb).await?;
+    maybe_kb!(
+        bot.send_message(msg.chat.id, welcome),
+        Some(main_menu_keyboard())
+    )
+    .await?;
     Ok(())
 }
 

@@ -140,7 +140,4 @@ Battles **must reset all modifiers to a clean baseline at battle start**, regard
  # TODO
 
 - **Complete inventory system**
-  - Create inventory menu
-  - Implement inventory managment
-- **Refctor controls module**
-  - Refactor functions: split them and make code cleaner
+  - Refactor controls/inventory

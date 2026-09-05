@@ -12,6 +12,8 @@ use teloxide::types::{Message, Update};
 pub enum KbCommand {
     #[strum(serialize = "get", to_string = "Получить")]
     Get,
+    #[strum(serialize = "inventory", to_string = "Котейнеры")]
+    Inventory,
 }
 
 impl KbCommand {
@@ -25,7 +27,6 @@ impl KbCommand {
         <Self as FromStr>::from_str(id).ok()
     }
 
-    /// Take `Message` by value instead of `&Message`
     #[allow(dead_code)]
     pub fn extract_from_message(msg: Message) -> Option<Self> {
         msg.text().and_then(Self::from_display_text)
@@ -43,7 +44,6 @@ impl UpdateKbExt for Update {
     where
         Output: Send + Sync + 'static,
     {
-        // Notice `msg: Message` (owned) here
         Update::filter_message()
             .filter_map(|msg: Message| msg.text().and_then(KbCommand::from_display_text))
     }

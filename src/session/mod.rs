@@ -26,7 +26,6 @@ const LOCK_STRIPES: usize = 256;
 pub struct UserProfile {
     #[natural_id]
     pub user_id: u64,
-    pub modifiers: ModifierBag,
     pub inventory: Inventory,
 }
 
@@ -40,6 +39,7 @@ pub struct EphemeralStats {
     pub between_rolls: CappedBuffer<i64>,
     pub last_roll_msg_id: Option<MessageId>,
     pub last_content: Option<Content>,
+    pub modifiers: ModifierBag,
 }
 
 // =========================================================================
@@ -55,9 +55,9 @@ pub struct UserSession {
     pub between_rolls: CappedBuffer<i64>,
     pub last_roll_msg_id: Option<MessageId>,
     pub last_content: Option<Content>,
+    pub modifiers: ModifierBag,
 
     // Persistent attributes
-    pub modifiers: ModifierBag,
     pub inventory: Inventory,
 }
 
@@ -79,14 +79,12 @@ impl UserSession {
     pub fn to_profile(&self) -> UserProfile {
         UserProfile {
             user_id: self.user_id,
-            modifiers: self.modifiers.clone(),
             inventory: self.inventory.clone(),
         }
     }
 
     pub fn from_profile(profile: UserProfile) -> Self {
         let mut session = Self::new(profile.user_id);
-        session.modifiers = profile.modifiers;
         session.inventory = profile.inventory;
         session
     }

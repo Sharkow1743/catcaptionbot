@@ -4,32 +4,14 @@ use teloxide::prelude::*;
 use teloxide::types::Message;
 
 use crate::content::Content;
-use crate::controls::kb_command::KbCommand;
 use crate::controls::take::cat_inline_keyboard;
 use crate::queue::KeyedBufferedQueue;
 use crate::session::UserSession;
-use crate::state::{AppState, DialogueState, HandlerResult};
+use crate::state::{AppState, HandlerResult};
 use crate::utils::unix_timestamp;
 use crate::{notice, stats};
 
-pub async fn handle_keyboard_callback(
-    msg: Message,
-    bot: Bot,
-    _dialogue: DialogueState,
-    cmd: KbCommand,
-    content_queue: KeyedBufferedQueue<u64, UserSession, anyhow::Result<Content>>,
-    session: UserSession,
-    app_state: AppState,
-) -> HandlerResult {
-    match cmd {
-        KbCommand::Get => {
-            serve_cat_roll(msg, bot, content_queue, session, app_state).await?;
-        }
-    }
-    Ok(())
-}
-
-async fn serve_cat_roll(
+pub async fn serve_cat_roll(
     msg: Message,
     bot: Bot,
     content_queue: KeyedBufferedQueue<u64, UserSession, anyhow::Result<Content>>,
@@ -82,7 +64,7 @@ async fn serve_cat_roll(
     let mut content = content_queue
         .request(session.user_id, session.clone())
         .await??;
-    let image = content.image();
+    let image = content.image_mut();
 
     // 5. Update placeholder with generated image & inline actions
     let msg_meta = bot

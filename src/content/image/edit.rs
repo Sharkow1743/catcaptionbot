@@ -1,8 +1,8 @@
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
+use crate::assets::CachedImage;
 use crate::content::rarity::{Rarity, RarityManager};
-use crate::content::types::CachedImage;
 use crate::session::UserSession;
 use crate::stats;
 

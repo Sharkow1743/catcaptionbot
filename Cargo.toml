@@ -41,3 +41,4 @@ rayon = "1.12"
 unicode-segmentation = "1.13"
 moka = { version = "0.12", features = ["future"] }
 bonsaidb = { version = "0.5", default-features = false, features = ["local", "async"] }
+uuid = { version = "1.26", features = ["v4", "serde"] }

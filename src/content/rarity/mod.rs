@@ -9,7 +9,6 @@ use std::sync::{Arc, OnceLock};
 
 pub use inventory;
 
-// NO typetag macros here!
 pub trait Rarity: Send + Sync + Debug {
     fn name(&self) -> String;
     fn id(&self) -> String;

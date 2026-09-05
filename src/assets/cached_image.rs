@@ -1,5 +1,17 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use teloxide::types::{FileId, InputFile, InputMedia, InputMediaPhoto};
+use thiserror::Error;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub struct ImageNotReadyError;
+
+impl fmt::Display for ImageNotReadyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Cannot get FileId: image is still pending upload")
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedImage {
@@ -113,5 +125,29 @@ impl From<CachedImage> for InputMedia {
 impl From<&CachedImage> for InputMedia {
     fn from(img: &CachedImage) -> Self {
         InputMedia::Photo(InputMediaPhoto::from(img))
+    }
+}
+
+// --- FileId conversions ---
+
+impl TryFrom<CachedImage> for FileId {
+    type Error = ImageNotReadyError;
+
+    fn try_from(img: CachedImage) -> Result<Self, Self::Error> {
+        match img.state {
+            CachedImageState::Ready(file_id) => Ok(file_id),
+            CachedImageState::Pending { .. } => Err(ImageNotReadyError),
+        }
+    }
+}
+
+impl TryFrom<&CachedImage> for FileId {
+    type Error = ImageNotReadyError;
+
+    fn try_from(img: &CachedImage) -> Result<Self, Self::Error> {
+        match &img.state {
+            CachedImageState::Ready(file_id) => Ok(file_id.clone()),
+            CachedImageState::Pending { .. } => Err(ImageNotReadyError),
+        }
     }
 }

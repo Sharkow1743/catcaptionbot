@@ -4,6 +4,7 @@ use teloxide::types::{
 };
 
 use crate::assets::AssetManager;
+use crate::content::Cat;
 use crate::content::inventory::Slot;
 use crate::session::UserSession;
 
@@ -49,7 +50,9 @@ pub async fn handle_take_cat(
     }
 
     // 2. Try placing into equipment or general inventory
-    let slot = Slot { cat: content };
+    let slot = Slot {
+        cat: Cat::new(content),
+    };
     let placed = match session.inventory.push("equip", slot) {
         Ok(()) => true,
         Err(slot) => session.inventory.push("inventory", slot).is_ok(),
@@ -89,7 +92,8 @@ pub async fn cat_escape(
         .await
     {
         if let Some(first_photo) = msg_meta.photo().and_then(|photos| photos.first()) {
-            asset_manager.update_file_id("cat_escape", first_photo.file.id.clone());
+            // was mistakenly cached under "cat_escape" — the registered key is "missing_cat"
+            asset_manager.update_file_id("missing_cat", first_photo.file.id.clone());
         }
     }
 }
