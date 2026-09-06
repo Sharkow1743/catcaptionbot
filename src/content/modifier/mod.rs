@@ -1,5 +1,6 @@
 pub mod modifiers {
     pub mod adrenaline;
+    pub mod loyalty;
 }
 
 use crate::session::UserSession;
@@ -11,6 +12,7 @@ use std::sync::{Mutex, OnceLock};
 
 pub use inventory;
 pub use modifiers::adrenaline::*;
+pub use modifiers::loyalty::*;
 
 // -----------------------------------------------------------------------------
 // HookArg Helper
@@ -236,7 +238,7 @@ pub fn warn_once(kind: &str, name: &str) {
 }
 
 // -----------------------------------------------------------------------------
-// ModifierBag Helpers (Binary-safe with HashMap<String, String>)
+// ModifierBag Helpers
 // -----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

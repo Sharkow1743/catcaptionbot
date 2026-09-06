@@ -66,7 +66,7 @@ pub async fn render_card_in_place(
             {
                 let file_id = size.file.id.clone();
                 let (cat, idx) = selected.target();
-                if let None = session.inventory.get(cat, idx) {
+                if session.inventory.get(cat, idx).is_none() {
                     asset_manager.update_file_id("missing_cat", file_id);
                 }
             }

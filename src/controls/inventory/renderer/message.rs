@@ -1,8 +1,8 @@
 use teloxide::prelude::*;
 use teloxide::types::{
     ChatId, InputRichBlock, InputRichBlockBlockQuotation, InputRichBlockButtons,
-    InputRichBlockDivider, InputRichBlockExpandableBlockQuotation, InputRichBlockParagraph,
-    InputRichMessage, MessageId, RichMessageButton, RichText,
+    InputRichBlockDivider, InputRichBlockParagraph, InputRichMessage, MessageId, RichMessageButton,
+    RichText,
 };
 
 use crate::controls::inventory::types::InventorySlot;
@@ -60,7 +60,7 @@ fn build_grid_buttons(session: &UserSession, selected: InventorySlot) -> Vec<Ric
         let label = if equip_selected {
             format!("◢ ◇ {name}")
         } else {
-            format!("◇{name}")
+            format!("◇ {name}")
         };
 
         grid_buttons.push(RichMessageButton::callback(
@@ -74,9 +74,9 @@ fn build_grid_buttons(session: &UserSession, selected: InventorySlot) -> Vec<Ric
             let name = slot.cat.image_text();
             let is_selected = selected == InventorySlot::Bag(idx);
             let label = if is_selected {
-                format!("◢ ⌂ {}", name)
+                format!("◢ ⌂ {name}")
             } else {
-                format!("⌂ {}", name)
+                format!("⌂ {name}")
             };
             grid_buttons.push(RichMessageButton::callback(
                 RichText::from(label),
@@ -94,16 +94,34 @@ fn build_detail_text(
     pending_release: Option<InventorySlot>,
 ) -> String {
     if pending_release == Some(selected) {
-        return "⚠️ Точно отпустить этого кота?\nЭто действие необратимо.".to_string();
+        return "Внимание: точно отпустить этого кота?\nЭто действие необратимо.".to_string();
     }
 
     let (cat_type, idx) = selected.target();
     match session.inventory.get(cat_type, idx) {
-        Some(slot) => format!(
-            "Имя: {}\nРедкость: {}",
-            slot.cat.image_text(),
-            slot.cat.rarity().name()
-        ),
+        Some(slot) => {
+            let loyalty = slot.cat.loyalty_level();
+            let loyalty_pct = (loyalty * 100.0).round() as i32;
+            let status_text = if loyalty >= 0.6 {
+                "Преданный"
+            } else if loyalty >= 0.2 {
+                "Дружелюбный"
+            } else if loyalty > -0.2 {
+                "Нейтральный"
+            } else if loyalty > -0.6 {
+                "Недовольный"
+            } else {
+                "Обиженный"
+            };
+
+            format!(
+                "Имя: {}\nРедкость: {}\nПреданность: {:+}% ({})",
+                slot.cat.image_text(),
+                slot.cat.rarity().name(),
+                loyalty_pct,
+                status_text
+            )
+        }
         None => "Слот пуст.".to_string(),
     }
 }
@@ -115,8 +133,8 @@ fn build_action_row(
 ) -> Option<Vec<RichMessageButton>> {
     if pending_release == Some(selected) {
         return Some(vec![
-            RichMessageButton::callback(RichText::from("✅ Да, отпустить"), "inv:confirm_release"),
-            RichMessageButton::callback(RichText::from("❌ Отмена"), "inv:cancel_release"),
+            RichMessageButton::callback(RichText::from("Да, отпустить"), "inv:confirm_release"),
+            RichMessageButton::callback(RichText::from("Отмена"), "inv:cancel_release"),
         ]);
     }
 

@@ -138,5 +138,3 @@ Battles **must reset all modifiers to a clean baseline at battle start**, regard
  - Maybe let loyality modifier in the battles. Because that will make players want to progress — to win in battles more often
 
  # TODO
-
-- implement loyality system and its modifier

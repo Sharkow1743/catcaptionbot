@@ -4,15 +4,17 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::assets::CachedImage;
+use crate::content::loyalty::Loyality;
 use crate::content::rarity::Rarity;
 use crate::text::QuoteBank;
+use crate::utils::unix_timestamp;
 
 use super::Content;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cat {
     content: Content,
-    loyality: f32,
+    pub loyality: Loyality,
     quote: String,
     uuid: Uuid,
 }
@@ -29,10 +31,19 @@ impl Cat {
         };
         Self {
             content,
-            loyality: 0.0,
+            loyality: Loyality::new(),
             quote,
             uuid: Uuid::new_v4(),
         }
+    }
+
+    pub fn tick_loyalty(&mut self, is_equipped: bool, now: i64) {
+        let tier = self.rarity().tier();
+        self.loyality.update(is_equipped, tier, now);
+    }
+
+    pub fn loyalty_level(&self) -> f32 {
+        self.loyality.level()
     }
 
     pub fn image(&self) -> &CachedImage {

@@ -12,6 +12,11 @@ pub use inventory;
 pub trait Rarity: Send + Sync + Debug {
     fn name(&self) -> String;
     fn id(&self) -> String;
+    /// Numeric tier representing how good the rarity is, standardized to [-1.0, 1.0]
+    /// (-1.0 = trash/common, 0.0 = average, 1.0 = legendary/mythic)
+    fn tier(&self) -> f32 {
+        0.0
+    }
     fn is_secret(&self) -> bool {
         false
     }
@@ -95,7 +100,10 @@ impl RarityManager {
         GLOBAL.get_or_init(RarityManager::from_registry)
     }
 
-    // ADDED: Lookup function for the database loader
+    pub fn all(&self) -> &[Arc<dyn Rarity>] {
+        &self.rarities
+    }
+
     pub fn get_by_id(&self, id: &str) -> Option<Arc<dyn Rarity>> {
         self.rarities.iter().find(|r| r.id() == id).cloned()
     }
@@ -145,11 +153,12 @@ impl RarityManager {
     }
 }
 
-// Custom Rarity Implementation (No typetag)
+// Custom Rarity Implementation
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SimpleRarity {
     name: String,
     id: String,
+    tier: f32,
     is_secret: bool,
     template: Vec<WordSpec>,
     weight: f32,
@@ -166,6 +175,7 @@ impl SimpleRarity {
         Self {
             name: name.into(),
             id: id.into(),
+            tier: 0.0,
             is_secret: false,
             template: Vec::new(),
             weight: 1.0,
@@ -173,6 +183,11 @@ impl SimpleRarity {
             rarity_color: Color::WHITE,
             text_color: Color::WHITE,
         }
+    }
+
+    pub fn tier(mut self, tier: f32) -> Self {
+        self.tier = tier;
+        self
     }
 
     pub fn template(mut self, t: Vec<WordSpec>) -> Self {
@@ -202,6 +217,9 @@ impl Rarity for SimpleRarity {
     }
     fn id(&self) -> String {
         self.id.clone()
+    }
+    fn tier(&self) -> f32 {
+        self.tier
     }
     fn is_secret(&self) -> bool {
         self.is_secret

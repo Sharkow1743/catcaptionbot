@@ -30,6 +30,13 @@ pub fn main_menu_keyboard() -> KeyboardMarkup {
     .input_field_placeholder(" ")
 }
 
+/// Reply keyboard shown while inside inventory (hides "Котейнеры", shows only "Получить").
+pub fn inventory_menu_keyboard() -> KeyboardMarkup {
+    reply_kb!([KbCommand::Get.to_string()])
+        .persistent()
+        .input_field_placeholder(" ")
+}
+
 pub async fn handle_keyboard_callback(
     msg: Message,
     bot: Bot,
@@ -69,9 +76,15 @@ pub async fn handle_inventory_message(
                 return Ok(());
             }
             KbCommand::Get => {
-                // User clicked "Получить": delete control board & start roll immediately
+                // User clicked "Получить": delete control board, restore main reply keyboard, and start roll
                 let _ = bot.delete_message(msg.chat.id, view.ctrl_msg_id).await;
                 dialogue.update(State::Start).await?;
+
+                let _ = bot
+                    .send_message(msg.chat.id, "Главное меню")
+                    .reply_markup(main_menu_keyboard())
+                    .await;
+
                 serve_cat_roll(msg, bot, content_queue, session, app_state).await?;
                 return Ok(());
             }

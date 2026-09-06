@@ -17,11 +17,12 @@ use image::edit::{preprocess_image, process_image};
 use image::fetch_image;
 use rarity::{Rarity, RarityManager};
 
+pub use loyalty::Loyality;
 pub use types::{Cat, Content};
 
 mod image;
 pub mod inventory;
-mod loyality;
+pub mod loyalty;
 pub mod modifier;
 pub mod rarity;
 mod types;
