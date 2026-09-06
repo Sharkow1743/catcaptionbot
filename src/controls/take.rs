@@ -7,6 +7,7 @@ use crate::assets::AssetManager;
 use crate::content::Cat;
 use crate::content::inventory::Slot;
 use crate::session::UserSession;
+use crate::text::QuoteBank;
 
 pub fn cat_inline_keyboard() -> InlineKeyboardMarkup {
     InlineKeyboardMarkup::new([[InlineKeyboardButton::callback("Забрать", "take_cat")]])
@@ -18,6 +19,7 @@ pub async fn handle_take_cat(
     chat_id: ChatId,
     msg_id: MessageId,
     asset_manager: &AssetManager,
+    quote_bank: &QuoteBank,
 ) {
     let Some(content) = session.last_content.take() else {
         return;
@@ -51,7 +53,7 @@ pub async fn handle_take_cat(
 
     // 2. Try placing into equipment or general inventory
     let slot = Slot {
-        cat: Cat::new(content),
+        cat: Cat::new(content, quote_bank).await,
     };
     let placed = match session.inventory.push("equip", slot) {
         Ok(()) => true,

@@ -16,37 +16,22 @@ impl InventorySlot {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct InventoryView {
-    pub msg_id: MessageId,
-    pub selected: InventorySlot,
-    pub nav_msg_id: Option<MessageId>,
-}
-
-pub const EQUIP_LABEL: &str = "Текущий кот";
-pub const BACK_LABEL: &str = "Назад";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InventoryAction {
-    ViewEquip,
-    ViewBag(usize),
-    Back,
+pub struct InventoryView {
+    pub card_msg_id: MessageId,
+    pub ctrl_msg_id: MessageId,
+    pub selected: InventorySlot,
+    /// Set while a release is awaiting confirmation. Cleared by any other action.
+    pub pending_release: Option<InventorySlot>,
 }
 
-impl InventoryAction {
-    pub fn from_text(text: &str) -> Option<Self> {
-        match text {
-            EQUIP_LABEL => Some(Self::ViewEquip),
-            BACK_LABEL => Some(Self::Back),
-            other => other
-                .chars()
-                .next()
-                .and_then(|c| c.to_digit(10))
-                .map(|n| Self::ViewBag((n as usize).saturating_sub(1))),
+impl InventoryView {
+    pub fn new(card_msg_id: MessageId, ctrl_msg_id: MessageId, selected: InventorySlot) -> Self {
+        Self {
+            card_msg_id,
+            ctrl_msg_id,
+            selected,
+            pending_release: None,
         }
-    }
-
-    pub fn bag_label(idx: usize, name: &str) -> String {
-        format!("{} {}", idx + 1, name)
     }
 }

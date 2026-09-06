@@ -13,13 +13,13 @@ pub async fn handle_inline_callback(
     dialogue: DialogueState,
     mut session: UserSession,
 ) -> HandlerResult {
-    let Some(data) = &q.data else {
+    let Some(data) = q.data.clone() else {
         return Ok(());
     };
 
-    let Some(message) = &q.message else {
+    let Some(message) = q.message.clone() else {
         log::warn!("Received callback query without message context");
-        let _ = bot.answer_callback_query(q.id.clone()).await;
+        let _ = bot.answer_callback_query(q.id).await;
         return Ok(());
     };
 
@@ -27,23 +27,22 @@ pub async fn handle_inline_callback(
     let msg_id = message.id();
 
     if data == "take_cat" {
-        let _ = bot.answer_callback_query(q.id.clone()).await;
-        handle_take_cat(&mut session, bot, chat_id, msg_id, &app_state.asset_manager).await;
-        app_state.session_manager.save_session(&session).await?;
-    } else if data.starts_with("inv:") {
-        handle_inventory_callback(
+        let _ = bot.answer_callback_query(q.id).await;
+        handle_take_cat(
+            &mut session,
             bot,
-            q.clone(),
             chat_id,
             msg_id,
-            data,
-            app_state,
-            dialogue,
-            session,
+            &app_state.asset_manager,
+            &app_state.composer.quotes,
         )
-        .await?;
+        .await;
+        app_state.session_manager.save_session(&session).await?;
+    } else if data.starts_with("inv:") {
+        handle_inventory_callback(bot, q, chat_id, msg_id, &data, app_state, dialogue, session)
+            .await?;
     } else {
-        let _ = bot.answer_callback_query(q.id.clone()).await;
+        let _ = bot.answer_callback_query(q.id).await;
         log::warn!("Unhandled callback query data: {data}");
     }
 

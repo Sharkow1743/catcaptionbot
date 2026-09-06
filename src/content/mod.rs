@@ -21,6 +21,7 @@ pub use types::{Cat, Content};
 
 mod image;
 pub mod inventory;
+mod loyality;
 pub mod modifier;
 pub mod rarity;
 mod types;

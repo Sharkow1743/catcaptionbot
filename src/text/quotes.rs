@@ -1,25 +1,14 @@
+use rand::RngExt;
 use rand::distr::Distribution;
 use rand::distr::weighted::WeightedIndex;
 use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::str::FromStr;
 
-// ============================================================================
-// QUOTE BANK — random/weighted-by-match Russian sentence lookup
-// backed by sentences.db (built by scripts/build_quotes_db.py from
-// rus_sentences.tsv, the Tatoeba Russian sentence export).
-//
-// Schema expected in sentences.db:
-//   CREATE TABLE quotes(id INTEGER PRIMARY KEY, text TEXT NOT NULL);
-//   CREATE VIRTUAL TABLE quotes_fts USING fts5(text, content='quotes', content_rowid='id', tokenize='unicode61');
-// ============================================================================
-
 #[derive(Debug, Clone)]
 pub struct Quote {
     pub id: i64,
     pub text: String,
-    /// Relative match strength for this query (higher = better match).
-    /// 0.0 for quotes returned with no query / as pure random fallback.
     pub score: f64,
 }
 
@@ -52,7 +41,6 @@ impl QuoteBank {
         Ok(row.0)
     }
 
-    /// Returns every quote in the database. Careful with memory on large corpora.
     pub async fn all_quotes(&self) -> anyhow::Result<Vec<Quote>> {
         let rows: Vec<(i64, String)> = sqlx::query_as("SELECT id, text FROM quotes")
             .fetch_all(&self.pool)
@@ -67,35 +55,49 @@ impl QuoteBank {
             .collect())
     }
 
-    /// Returns `n` completely random quotes, no query involved.
+    /// Fast indexed random selection avoiding ORDER BY RANDOM() on full table
     pub async fn random_quotes(&self, n: usize) -> anyhow::Result<Vec<Quote>> {
         if n == 0 {
             return Ok(vec![]);
         }
-        let rows: Vec<(i64, String)> =
-            sqlx::query_as("SELECT id, text FROM quotes ORDER BY RANDOM() LIMIT ?")
-                .bind(n as i64)
-                .fetch_all(&self.pool)
-                .await?;
-        Ok(rows
-            .into_iter()
-            .map(|(id, text)| Quote {
-                id,
-                text,
-                score: 0.0,
-            })
-            .collect())
+
+        let max_id: Option<(i64,)> = sqlx::query_as("SELECT MAX(id) FROM quotes")
+            .fetch_optional(&self.pool)
+            .await?;
+
+        let max_id = match max_id.and_then(|r| Some(r.0)) {
+            Some(m) if m > 0 => m,
+            _ => return Ok(vec![]),
+        };
+
+        // Generate all random IDs upfront so `ThreadRng` (!Send) is dropped before `.await`
+        let random_ids: Vec<i64> = {
+            let mut rng = rand::rng();
+            (0..n).map(|_| rng.random_range(1..=max_id)).collect()
+        };
+
+        let mut results = Vec::with_capacity(n);
+
+        // Fetch using random ID points (fast index lookup per item)
+        for random_id in random_ids {
+            let row: Option<(i64, String)> =
+                sqlx::query_as("SELECT id, text FROM quotes WHERE id >= ? ORDER BY id ASC LIMIT 1")
+                    .bind(random_id)
+                    .fetch_optional(&self.pool)
+                    .await?;
+
+            if let Some((id, text)) = row {
+                results.push(Quote {
+                    id,
+                    text,
+                    score: 0.0,
+                });
+            }
+        }
+
+        Ok(results)
     }
 
-    /// Returns up to `n` quotes containing (fuzzily) `query`, weighted-sampled
-    /// by match quality — i.e. better matches are more likely to be picked,
-    /// but it's not a strict top-N, similar to how translator UIs surface
-    /// varied example sentences rather than always the single best hit.
-    ///
-    /// Falls back progressively if nothing scores well:
-    ///   1. FTS5 match (BM25-ranked) on the query terms
-    ///   2. plain substring LIKE match
-    ///   3. pure random quotes (so this never returns empty on a non-empty DB)
     pub async fn random_quotes_containing(
         &self,
         query: &str,
@@ -122,7 +124,6 @@ impl QuoteBank {
         Ok(weighted_sample(candidates, n))
     }
 
-    /// Convenience: single weighted-random match, or `None` if the DB is empty.
     pub async fn random_quote_containing(&self, query: &str) -> anyhow::Result<Option<Quote>> {
         Ok(self
             .random_quotes_containing(query, 1)
@@ -132,12 +133,11 @@ impl QuoteBank {
     }
 
     // ------------------------------------------------------------------
-    // internals
+    // Internals
     // ------------------------------------------------------------------
 
     async fn fts_candidates(&self, q: &str, limit: usize) -> anyhow::Result<Vec<Quote>> {
-        // Try as an exact phrase first (best signal), then fall back to an
-        // OR-of-prefixes match so partial/typo'd input still finds things.
+        // Try as exact phrase first
         let phrase_expr = format!("\"{}\"", sanitize_fts_term(q));
         if let Some(rows) = self.run_fts(&phrase_expr, limit).await? {
             if !rows.is_empty() {
@@ -145,6 +145,7 @@ impl QuoteBank {
             }
         }
 
+        // Fall back to prefix matching (e.g. "прив*") which handles partial matches
         let or_expr = q
             .split_whitespace()
             .map(sanitize_fts_term)
@@ -176,15 +177,13 @@ impl QuoteBank {
 
         let rows = match rows {
             Ok(r) => r,
-            Err(_) => return Ok(None), // malformed FTS query syntax etc. — fall through
+            Err(_) => return Ok(None),
         };
 
         let mut quotes = Vec::with_capacity(rows.len());
         for row in rows {
             let id: i64 = row.try_get("id")?;
             let text: String = row.try_get("text")?;
-            // bm25() in sqlite is negative & lower-is-better; flip and shift
-            // so higher score = better match, and keep it positive for weighting.
             let rank: f64 = row.try_get("rank").unwrap_or(0.0);
             let score = (-rank).max(0.0) + 0.01;
             quotes.push(Quote { id, text, score });
@@ -193,36 +192,56 @@ impl QuoteBank {
     }
 
     async fn like_candidates(&self, q: &str, limit: usize) -> anyhow::Result<Vec<Quote>> {
+        // Step 1: Get count of matches without ordering
         let pattern = format!("%{}%", q.replace('%', "").replace('_', ""));
-        let rows: Vec<(i64, String)> = sqlx::query_as(
-            "SELECT id, text FROM quotes WHERE text LIKE ? ORDER BY RANDOM() LIMIT ?",
-        )
-        .bind(&pattern)
-        .bind(limit as i64)
-        .fetch_all(&self.pool)
-        .await?;
+        let count_row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM quotes WHERE text LIKE ?")
+            .bind(&pattern)
+            .fetch_one(&self.pool)
+            .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(|(id, text)| Quote {
-                id,
-                text,
-                score: 1.0, // flat weight — LIKE gives no ranking signal
-            })
-            .collect())
+        let match_count = count_row.0;
+        if match_count == 0 {
+            return Ok(vec![]);
+        }
+
+        // Step 2: Sample offsets upfront so `ThreadRng` (!Send) is dropped before `.await`
+        let fetch_count = (limit as i64).min(match_count);
+        let offsets: Vec<i64> = {
+            let mut rng = rand::rng();
+            (0..fetch_count)
+                .map(|_| rng.random_range(0..match_count))
+                .collect()
+        };
+
+        let mut quotes = Vec::with_capacity(fetch_count as usize);
+
+        for offset in offsets {
+            let row: Option<(i64, String)> =
+                sqlx::query_as("SELECT id, text FROM quotes WHERE text LIKE ? LIMIT 1 OFFSET ?")
+                    .bind(&pattern)
+                    .bind(offset)
+                    .fetch_optional(&self.pool)
+                    .await?;
+
+            if let Some((id, text)) = row {
+                quotes.push(Quote {
+                    id,
+                    text,
+                    score: 1.0,
+                });
+            }
+        }
+
+        Ok(quotes)
     }
 }
 
-/// Strips characters that would break FTS5 query syntax (quotes, wildcards
-/// used mid-token, etc.) from a single search term.
 fn sanitize_fts_term(term: &str) -> String {
     term.chars()
         .filter(|c| !matches!(c, '"' | '*' | '(' | ')' | ':' | '^'))
         .collect()
 }
 
-/// Weighted-samples up to `n` quotes without replacement, biased toward
-/// higher `score`. Falls back to uniform weight if all scores are zero.
 fn weighted_sample(mut candidates: Vec<Quote>, n: usize) -> Vec<Quote> {
     if candidates.is_empty() || n == 0 {
         return vec![];

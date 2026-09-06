@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::assets::CachedImage;
 use crate::content::rarity::Rarity;
+use crate::text::QuoteBank;
 
 use super::Content;
 
@@ -12,14 +13,24 @@ use super::Content;
 pub struct Cat {
     content: Content,
     loyality: f32,
+    quote: String,
     uuid: Uuid,
 }
 
 impl Cat {
-    pub fn new(content: Content) -> Self {
+    pub async fn new(content: Content, quote_bank: &QuoteBank) -> Self {
+        let quote = if let Ok(Some(quote)) = quote_bank
+            .random_quote_containing(&content.image_text())
+            .await
+        {
+            quote.text
+        } else {
+            "".to_string()
+        };
         Self {
             content,
             loyality: 0.0,
+            quote,
             uuid: Uuid::new_v4(),
         }
     }
@@ -42,5 +53,9 @@ impl Cat {
 
     pub fn uuid(&self) -> &Uuid {
         &self.uuid
+    }
+
+    pub fn quote(&self) -> &str {
+        &self.quote
     }
 }
