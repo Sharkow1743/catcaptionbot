@@ -191,6 +191,11 @@ impl Morpher {
         }
     }
 
+    // --- FIX 1: noun suffixes like "-ость/-есть/-асть" checked BEFORE the bare
+    // "ть"-ending verb heuristic, and the verb branch now requires a real
+    // infinitive vowel+ть/ти pattern instead of matching any word ending "ть".
+    // This is what caused "разновидность" (a noun) to be misparsed as a verb,
+    // which downstream made harmonize() mangle it into "разновидно".
     fn analyze_by_heuristics(word: &str) -> WordAnalysis {
         let w = word.to_lowercase();
         let (pos, gender, number) = if w.ends_with("ый") || w.ends_with("ий") || w.ends_with("ой")
@@ -202,7 +207,22 @@ impl Morpher {
             (Pos::Adj, Gender::Neuter, Number::Singular)
         } else if w.ends_with("ые") || w.ends_with("ие") {
             (Pos::Adj, Gender::Masculine, Number::Plural)
-        } else if w.ends_with("ть") || w.ends_with("ти") || w.ends_with("ться") {
+        } else if w.ends_with("ость") || w.ends_with("есть") || w.ends_with("асть") {
+            // разновидность, плоскость, радость, масть, etc. — feminine nouns.
+            // Must be checked before the verb-infinitive heuristic below,
+            // since these also end in "ть".
+            (Pos::Noun, Gender::Feminine, Number::Singular)
+        } else if w.ends_with("ать")
+            || w.ends_with("ять")
+            || w.ends_with("еть")
+            || w.ends_with("ить")
+            || w.ends_with("оть")
+            || w.ends_with("уть")
+            || w.ends_with("ыть")
+            || w.ends_with("сти")
+            || w.ends_with("зти")
+            || w.ends_with("ться")
+        {
             (Pos::Verb, Gender::Masculine, Number::Singular)
         } else if w.ends_with('а') || w.ends_with('я') {
             (Pos::Noun, Gender::Feminine, Number::Singular)
@@ -654,6 +674,14 @@ impl Morpher {
                         }
                     }
 
+                    // FIX 2: use this token's own POS tag ("ADJF" for adjectives,
+                    // "PRTF" for participles) instead of hardcoding "ADJF" for
+                    // both. Requesting "ADJF" for a participle like "определённый"
+                    // (tagged PRTF in the dictionary) degraded scoring against the
+                    // real PRTF candidate forms and produced no agreement change
+                    // ("определённый ссуда" instead of "определённая ссуда").
+                    let pos_tag = tok.pos.to_opencorpora_tag();
+
                     if let Some(noun) = target_noun {
                         let adj_gender = if noun.grammemes.contains("femn") {
                             "femn"
@@ -674,7 +702,7 @@ impl Morpher {
 
                         InflectionJob::Adjective {
                             word: tok.original.clone(),
-                            req: vec!["ADJF", adj_gender, adj_number, adj_case],
+                            req: vec![pos_tag, adj_gender, adj_number, adj_case],
                         }
                     } else if i + 1 < tokens.len()
                         && (tokens[i + 1].pos == Pos::Adj || tokens[i + 1].pos == Pos::Prt)
@@ -685,7 +713,7 @@ impl Morpher {
                     } else {
                         InflectionJob::Adjective {
                             word: tok.original.clone(),
-                            req: vec!["ADJF", "masc", "sing", "nomn"],
+                            req: vec![pos_tag, "masc", "sing", "nomn"],
                         }
                     }
                 }
@@ -850,5 +878,14 @@ mod tests {
 
         let verb = Morpher::analyze_by_heuristics("бежать");
         assert_eq!(verb.pos, Pos::Verb);
+
+        // Regression test for the "разновидность" bug: nouns ending in
+        // -ость/-есть/-асть must not be classified as verbs.
+        let noun = Morpher::analyze_by_heuristics("разновидность");
+        assert_eq!(noun.pos, Pos::Noun);
+        assert_eq!(noun.gender, Gender::Feminine);
+
+        let noun2 = Morpher::analyze_by_heuristics("радость");
+        assert_eq!(noun2.pos, Pos::Noun);
     }
 }

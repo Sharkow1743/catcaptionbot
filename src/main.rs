@@ -20,8 +20,8 @@ use controls::kb_command::UpdateKbExt;
 use controls::{handle_inline_callback, handle_keyboard_callback};
 use session::SessionManager;
 use state::{AppState, Config, State};
-use text::WordGenerator;
 use text::{Morpher, TextComposer};
+use text::{QuoteBank, WordGenerator};
 
 use libsqlite3_sys::sqlite3_auto_extension;
 use sqlite_vec::sqlite3_vec_init;
@@ -60,7 +60,8 @@ async fn main() -> anyhow::Result<()> {
     let morpher = Morpher::new(&config.morphology_db_path).await?;
     let word_generator =
         WordGenerator::new_with_local_model(&config.words_db_path, &config.model_dir).await?;
-    let composer = TextComposer::new(morpher, word_generator);
+    let quote_bank = QuoteBank::new(&config.sentences_db_path).await?;
+    let composer = TextComposer::new(morpher, word_generator, quote_bank);
 
     let session_manager = SessionManager::new(&config.app_db_path)?;
 

@@ -37,6 +37,7 @@ pub struct Config {
     pub model_dir: String,
     pub image_cache_dir: String,
     pub connect_timeout_secs: u64,
+    pub sentences_db_path: String,
 }
 
 impl Default for Config {
@@ -53,6 +54,8 @@ impl Default for Config {
             image_cache_dir: std::env::var("IMAGE_CACHE_DIR")
                 .unwrap_or_else(|_| ".image_cache".to_string()),
             connect_timeout_secs: 5,
+            sentences_db_path: std::env::var("SENTENCES_DB")
+                .unwrap_or_else(|_| "sentences.db".to_string()),
         }
     }
 }

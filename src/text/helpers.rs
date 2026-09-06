@@ -1,6 +1,8 @@
 use super::generator::WordGenerator;
 use super::morph::Morpher;
+use super::quotes::{Quote, QuoteBank};
 use super::types::{Pos, WordSpec};
+use std::path::Path;
 
 // ============================================================================
 // STANDALONE ORCHESTRATION HELPERS
@@ -35,8 +37,7 @@ pub async fn generate_and_harmonize_with_separator(
     Ok(harmonized.replace(' ', separator.as_ref()))
 }
 
-/// Runs a template and returns the raw sampled words without grammatical harmonization —
-/// useful for debugging a template or feeding words into custom logic.
+/// Runs a template and returns the raw sampled words without grammatical harmonization.
 #[allow(dead_code)]
 pub async fn generate_words(
     generator: &WordGenerator,
@@ -48,7 +49,6 @@ pub async fn generate_words(
 }
 
 /// Harmonizes an arbitrary, already-known list of words (skips generation entirely).
-/// Handy for mixing user-supplied words with generated ones downstream.
 #[allow(dead_code)]
 pub async fn harmonize_words(
     morpher: &Morpher,
@@ -78,8 +78,7 @@ pub async fn generate_harmonized_phrase_by_similarity(
     Ok(harmonized)
 }
 
-/// Same as `generate_harmonized_phrase_by_similarity` but caps the candidate pool to `top_k`
-/// closest matches before weighted sampling — gives tighter thematic control.
+/// Same as `generate_harmonized_phrase_by_similarity` but caps candidate pool to `top_k` matches.
 #[allow(dead_code)]
 pub async fn generate_harmonized_phrase_by_similarity_top_k(
     generator: &WordGenerator,
@@ -116,8 +115,7 @@ pub async fn generate_many_phrases(
     Ok(out)
 }
 
-/// Tries a template, and falls back to `fallback` if generation yields no words at all
-/// (e.g. an over-constrained template with no DB matches).
+/// Tries a template and falls back to `fallback` if generation yields no words.
 #[allow(dead_code)]
 pub async fn generate_and_harmonize_or(
     generator: &WordGenerator,
@@ -134,24 +132,85 @@ pub async fn generate_and_harmonize_or(
     fallback.as_ref().to_string()
 }
 
+/// Generates a harmonized phrase and finds a matching quote from `QuoteBank`.
+#[allow(dead_code)]
+pub async fn generate_and_find_quote(
+    generator: &WordGenerator,
+    morpher: &Morpher,
+    quotes: &QuoteBank,
+    template: impl AsRef<[WordSpec]>,
+) -> anyhow::Result<(String, Option<Quote>)> {
+    let phrase = generate_and_harmonize(generator, morpher, template).await?;
+    let quote = quotes.random_quote_containing(&phrase).await?;
+    Ok((phrase, quote))
+}
+
 // ============================================================================
 // UNIFIED COMPOSER STRUCT
 // ============================================================================
 
-/// High-level wrapper combining `Morpher` and `WordGenerator`
-/// for executing combined text workflows conveniently.
+/// High-level wrapper combining `Morpher`, `WordGenerator`, and `QuoteBank`
+/// for executing unified generation, inflection, and quote lookup workflows.
 #[derive(Clone)]
 pub struct TextComposer {
     pub morpher: Morpher,
     pub generator: WordGenerator,
+    pub quotes: QuoteBank,
 }
 
 impl TextComposer {
-    pub fn new(morpher: Morpher, generator: WordGenerator) -> Self {
-        Self { morpher, generator }
+    /// Creates a composer from pre-existing instances of Morpher, WordGenerator, and QuoteBank.
+    pub fn new(morpher: Morpher, generator: WordGenerator, quotes: QuoteBank) -> Self {
+        Self {
+            morpher,
+            generator,
+            quotes,
+        }
     }
 
-    /// Generates words matching the given template specifications and harmonizes them grammatically.
+    /// Initializes all three components from individual database paths (using default model path "robert-tiny2").
+    pub async fn from_dbs(
+        dict_db_path: &str,
+        words_db_path: &str,
+        quotes_db_path: &str,
+    ) -> anyhow::Result<Self> {
+        let morpher = Morpher::new(dict_db_path).await?;
+        let generator = WordGenerator::new(words_db_path).await?;
+        let quotes = QuoteBank::new(quotes_db_path).await?;
+        Ok(Self::new(morpher, generator, quotes))
+    }
+
+    /// Initializes all components with separate DB paths and a custom embedding model directory.
+    pub async fn from_dbs_with_model(
+        dict_db_path: &str,
+        words_db_path: &str,
+        quotes_db_path: &str,
+        model_dir: impl AsRef<Path>,
+    ) -> anyhow::Result<Self> {
+        let morpher = Morpher::new(dict_db_path).await?;
+        let generator = WordGenerator::new_with_local_model(words_db_path, model_dir).await?;
+        let quotes = QuoteBank::new(quotes_db_path).await?;
+        Ok(Self::new(morpher, generator, quotes))
+    }
+
+    /// Initializes all three engines from a single consolidated SQLite database.
+    pub async fn from_single_db(db_path: &str) -> anyhow::Result<Self> {
+        Self::from_dbs(db_path, db_path, db_path).await
+    }
+
+    /// Initializes all three engines from a single SQLite database with a custom embedding model.
+    pub async fn from_single_db_with_model(
+        db_path: &str,
+        model_dir: impl AsRef<Path>,
+    ) -> anyhow::Result<Self> {
+        Self::from_dbs_with_model(db_path, db_path, db_path, model_dir).await
+    }
+
+    // ========================================================================
+    // GENERATION & MORPHOLOGY
+    // ========================================================================
+
+    /// Generates words matching template specifications and harmonizes them grammatically.
     pub async fn generate_and_harmonize(
         &self,
         template: impl AsRef<[WordSpec]>,
@@ -159,7 +218,7 @@ impl TextComposer {
         generate_and_harmonize(&self.generator, &self.morpher, template).await
     }
 
-    /// Same, with a custom word separator in the output.
+    /// Same, with a custom separator between words.
     #[allow(dead_code)]
     pub async fn generate_and_harmonize_with_separator(
         &self,
@@ -170,7 +229,7 @@ impl TextComposer {
             .await
     }
 
-    /// Raw sampled words for a template, no harmonization.
+    /// Raw sampled words for a template without grammatical inflection.
     #[allow(dead_code)]
     pub async fn generate_words(
         &self,
@@ -236,7 +295,7 @@ impl TextComposer {
         generate_many_phrases(&self.generator, &self.morpher, template, n).await
     }
 
-    /// Template with a fallback string if nothing matched.
+    /// Template with fallback string if generation produces nothing.
     #[allow(dead_code)]
     pub async fn generate_and_harmonize_or(
         &self,
@@ -244,5 +303,52 @@ impl TextComposer {
         fallback: impl AsRef<str>,
     ) -> String {
         generate_and_harmonize_or(&self.generator, &self.morpher, template, fallback).await
+    }
+
+    // ========================================================================
+    // QUOTE BANK OPERATIONS
+    // ========================================================================
+
+    /// Total number of quotes in the quote bank.
+    #[allow(dead_code)]
+    pub async fn quote_count(&self) -> anyhow::Result<i64> {
+        self.quotes.count().await
+    }
+
+    /// Returns every quote in the database.
+    #[allow(dead_code)]
+    pub async fn all_quotes(&self) -> anyhow::Result<Vec<Quote>> {
+        self.quotes.all_quotes().await
+    }
+
+    /// Returns `n` random quotes from the quote bank.
+    #[allow(dead_code)]
+    pub async fn random_quotes(&self, n: usize) -> anyhow::Result<Vec<Quote>> {
+        self.quotes.random_quotes(n).await
+    }
+
+    /// Returns up to `n` quotes matching the given search query.
+    #[allow(dead_code)]
+    pub async fn random_quotes_containing(
+        &self,
+        query: &str,
+        n: usize,
+    ) -> anyhow::Result<Vec<Quote>> {
+        self.quotes.random_quotes_containing(query, n).await
+    }
+
+    /// Returns a single quote matching the search query, if any.
+    #[allow(dead_code)]
+    pub async fn random_quote_containing(&self, query: &str) -> anyhow::Result<Option<Quote>> {
+        self.quotes.random_quote_containing(query).await
+    }
+
+    /// Generates a harmonized phrase from the template and finds a matching quote for it.
+    #[allow(dead_code)]
+    pub async fn generate_phrase_with_quote(
+        &self,
+        template: impl AsRef<[WordSpec]>,
+    ) -> anyhow::Result<(String, Option<Quote>)> {
+        generate_and_find_quote(&self.generator, &self.morpher, &self.quotes, template).await
     }
 }
