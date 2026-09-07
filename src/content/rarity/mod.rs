@@ -12,8 +12,10 @@ pub use inventory;
 pub trait Rarity: Send + Sync + Debug {
     fn name(&self) -> String;
     fn id(&self) -> String;
+    fn domain_id(&self) -> &'static str {
+        "neutral"
+    }
     /// Numeric tier representing how good the rarity is, standardized to [-1.0, 1.0]
-    /// (-1.0 = trash/common, 0.0 = average, 1.0 = legendary/mythic)
     fn tier(&self) -> f32 {
         0.0
     }
@@ -153,11 +155,11 @@ impl RarityManager {
     }
 }
 
-// Custom Rarity Implementation
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SimpleRarity {
     name: String,
     id: String,
+    domain_id: &'static str,
     tier: f32,
     is_secret: bool,
     template: Vec<WordSpec>,
@@ -175,6 +177,7 @@ impl SimpleRarity {
         Self {
             name: name.into(),
             id: id.into(),
+            domain_id: "neutral",
             tier: 0.0,
             is_secret: false,
             template: Vec::new(),
@@ -183,6 +186,11 @@ impl SimpleRarity {
             rarity_color: Color::WHITE,
             text_color: Color::WHITE,
         }
+    }
+
+    pub fn domain_id(mut self, domain: &'static str) -> Self {
+        self.domain_id = domain;
+        self
     }
 
     pub fn tier(mut self, tier: f32) -> Self {
@@ -217,6 +225,9 @@ impl Rarity for SimpleRarity {
     }
     fn id(&self) -> String {
         self.id.clone()
+    }
+    fn domain_id(&self) -> &'static str {
+        self.domain_id
     }
     fn tier(&self) -> f32 {
         self.tier
