@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::content::domain::DomainManager;
 use crate::content::loyalty::Loyality;
 use crate::content::modifier::{HookArg, Modifier};
 use crate::content::rarity::RarityManager;
@@ -29,7 +30,6 @@ impl Modifier for Loyalty {
     }
 
     fn display(&self) -> String {
-        // Kept clean so no extra badges are drawn on the image banner
         String::new()
     }
 
@@ -43,13 +43,21 @@ impl Modifier for Loyalty {
         };
 
         let loyalty_level = active_slot.cat.loyalty_level();
+        let equipped_domain_id = active_slot.cat.domain_id();
+        let domain_mgr = DomainManager::global();
+        let equipped_domain = domain_mgr.get_by_id(equipped_domain_id);
         let rarity_mgr = RarityManager::global();
 
         hook.on::<HashMap<String, f32>>("rarity_weights", move |mut weights| {
             for (id, weight) in weights.iter_mut() {
                 if let Some(rarity) = rarity_mgr.get_by_id(id) {
-                    let mult = Loyality::weight_multiplier(loyalty_level, rarity.tier());
-                    *weight *= mult;
+                    let tier_mult = Loyality::weight_multiplier(loyalty_level, rarity.tier());
+                    let domain_mult = if let Some(ref domain) = equipped_domain {
+                        domain.weight_multiplier(rarity.domain_id(), loyalty_level)
+                    } else {
+                        1.0
+                    };
+                    *weight *= tier_mult * domain_mult;
                 }
             }
             weights

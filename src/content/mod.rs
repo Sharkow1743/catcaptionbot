@@ -17,9 +17,12 @@ use image::edit::{preprocess_image, process_image};
 use image::fetch_image;
 use rarity::{Rarity, RarityManager};
 
+pub use domain::{Domain, DomainManager};
 pub use loyalty::Loyality;
 pub use types::{Cat, Content};
 
+mod battle;
+pub mod domain;
 mod image;
 pub mod inventory;
 pub mod loyalty;
@@ -35,7 +38,6 @@ async fn generate_rarity_text(
     composer.generate_and_harmonize(template).await
 }
 
-/// State struct paired with the ComputeLimiter
 pub struct PipelineContext {
     pub app_state: Arc<AppState>,
     pub limiter: ComputeLimiter,
@@ -49,7 +51,6 @@ pub async fn content_queue(
         limiter: ComputeLimiter::new(),
     });
 
-    // 1. Image Fetcher: bounded worker count to prevent network/memory saturation
     let image_fetch_queue: Receiver<Bytes> = spawn_producer(
         ctx.clone(),
         WorkerPoolConfig::new(1, 4, 16),
@@ -61,26 +62,19 @@ pub async fn content_queue(
         },
     );
 
-    // 2. Image Preprocessor (Background):
-    //    Uses `acquire_background` (max 50% CPU quota) and `run_cpu` (Rayon pool)
     let image_preprocess_queue: Receiver<Image> = spawn_transformer(
         ctx.clone(),
         image_fetch_queue,
         WorkerPoolConfig::new(1, 4, 16),
         |image_bytes, ctx| async move {
             let preprocess_time = Instant::now();
-
-            // Low-priority compute permit (yields if foreground needs CPU)
             let _permit = ctx.limiter.acquire_background().await;
-
-            // Offload CPU-heavy Skia decode to Rayon pool
             let image = run_cpu(move || preprocess_image(&image_bytes)).await?;
             stats!("Preprocessed image in {:?}", preprocess_time.elapsed());
             anyhow::Ok(image)
         },
     );
 
-    // 3. Keyed Pre-buffering per user session (2 items ready in buffer, 30s idle TTL)
     let buffer_config = KeyedBufferConfig::new(2, Duration::from_secs(30))
         .with_max_workers_per_key(3)
         .with_idle_worker_ttl(Duration::from_secs(15));
@@ -112,10 +106,7 @@ async fn process_content(
         let text = text.clone();
         let session = session.clone();
 
-        // High-priority compute permit: can use any available core immediately
         let _permit = ctx.limiter.acquire_foreground().await;
-
-        // Render composite on Rayon pool (bypasses Tokio's runtime threads)
         run_cpu(move || process_image(rarity.as_ref(), image, text, modifiers, session)).await?
     };
     let image_time = image_time.elapsed();

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::assets::CachedImage;
+use crate::content::domain::{Domain, DomainManager};
 use crate::content::loyalty::Loyality;
 use crate::content::rarity::Rarity;
 use crate::text::QuoteBank;
@@ -44,6 +45,62 @@ impl Cat {
 
     pub fn loyalty_level(&self) -> f32 {
         self.loyality.level()
+    }
+
+    pub fn domain(&self) -> Arc<dyn Domain> {
+        let domain_id = self.rarity().domain_id();
+        DomainManager::global()
+            .get_by_id(domain_id)
+            .unwrap_or_else(DomainManager::default_domain)
+    }
+
+    pub fn domain_id(&self) -> &'static str {
+        self.rarity().domain_id()
+    }
+
+    /// Formats detailed domain resonance stats for text inspection/stats views
+    pub fn domain_stats(&self) -> String {
+        let domain = self.domain();
+        let loyalty = self.loyalty_level();
+
+        let resonant = domain.resonant_domains();
+        let opposing = domain.opposing_domains();
+
+        let resonant_str = if resonant.is_empty() {
+            "нет".to_string()
+        } else {
+            resonant
+                .iter()
+                .filter_map(|&id| DomainManager::global().get_by_id(id))
+                .map(|d| d.name().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+
+        let opposing_str = if opposing.is_empty() {
+            "нет".to_string()
+        } else {
+            opposing
+                .iter()
+                .filter_map(|&id| DomainManager::global().get_by_id(id))
+                .map(|d| d.name().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+
+        let pos_l = loyalty.max(0.0);
+        let boost_pct = (0.80 * pos_l * 100.0).round() as i32;
+        let suppress_pct = (0.70 * pos_l * 100.0).round() as i32;
+
+        format!(
+            "Домен: {}\nСвязь: {:+.2}\nРезонанс (+{}%): {}\nПодавление (-{}%): {}",
+            domain.name(),
+            loyalty,
+            boost_pct,
+            resonant_str,
+            suppress_pct,
+            opposing_str
+        )
     }
 
     pub fn image(&self) -> &CachedImage {
