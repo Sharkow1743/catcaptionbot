@@ -69,8 +69,9 @@ pub async fn generate_harmonized_phrase_by_similarity(
     count: usize,
 ) -> anyhow::Result<String> {
     let target_vec = generator
-        .get_or_create_embedding(target_text.as_ref())
-        .await?;
+        .get_or_vectorize(target_text.as_ref())
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Failed to vectorize target text"))?;
     let words = generator
         .get_random_words_by_pos_and_similarity(poses.as_ref(), &target_vec, count, None)
         .await?;
@@ -89,8 +90,9 @@ pub async fn generate_harmonized_phrase_by_similarity_top_k(
     top_k: usize,
 ) -> anyhow::Result<String> {
     let target_vec = generator
-        .get_or_create_embedding(target_text.as_ref())
-        .await?;
+        .get_or_vectorize(target_text.as_ref())
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Failed to vectorize target text"))?;
     let words = generator
         .get_random_words_by_pos_and_similarity(poses.as_ref(), &target_vec, count, Some(top_k))
         .await?;

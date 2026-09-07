@@ -162,37 +162,84 @@ impl WordGenerator {
         Ok(None)
     }
 
-    #[allow(dead_code)]
-    pub async fn get_or_create_embedding(&self, text: impl AsRef<str>) -> anyhow::Result<Vec<f32>> {
+    pub async fn get_or_vectorize(&self, text: impl AsRef<str>) -> Option<Vec<f32>> {
         let text_ref = text.as_ref();
         let trimmed = text_ref.trim().to_lowercase();
+        if trimmed.is_empty() {
+            return None;
+        }
 
+        // 1. Check in-memory RAM cache
         if let Ok(cache) = self.embedding_cache.read() {
             if let Some(vec) = cache.get(&trimmed) {
-                return Ok(vec.clone());
+                return Some(vec.clone());
             }
         }
 
+        // 2. Check SQLite DB (point lookup)
         if let Ok(Some(vec)) = self.find_vector_in_db(&trimmed).await {
             if let Ok(mut cache) = self.embedding_cache.write() {
                 cache.insert(trimmed, vec.clone());
             }
-            return Ok(vec);
+            return Some(vec);
         }
 
-        let mut embedder = self.embedder.lock().await;
-        let embeddings = embedder.embed(vec![trimmed.clone()], None)?;
+        // 3. Compute embedding via ONNX model
+        let vec = {
+            let mut embedder = self.embedder.lock().await;
+            match embedder.embed(vec![trimmed.clone()], None) {
+                Ok(mut embeddings) => embeddings.pop()?,
+                Err(err) => {
+                    log::warn!("Failed to compute embedding for \"{trimmed}\": {err}");
+                    return None;
+                }
+            }
+        };
 
-        let vec = embeddings
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("Failed to compute embedding"))?;
+        // 4. Persist to SQLite tables (words + vec_words)
+        let target_bytes = f32_vec_to_bytes(&vec);
+        let save_result: Result<(), sqlx::Error> = async {
+            let mut tx = self.pool.begin().await?;
 
+            let existing: Option<(i64,)> =
+                sqlx::query_as("SELECT id FROM words WHERE word = ? LIMIT 1")
+                    .bind(&trimmed)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+
+            let rowid = if let Some((id,)) = existing {
+                id
+            } else {
+                let inserted: (i64,) = sqlx::query_as(
+                    "INSERT INTO words (word, pos, weight) VALUES (?, 'MISC', 1.0) RETURNING id",
+                )
+                .bind(&trimmed)
+                .fetch_one(&mut *tx)
+                .await?;
+                inserted.0
+            };
+
+            sqlx::query("INSERT OR REPLACE INTO vec_words (rowid, embedding) VALUES (?, ?)")
+                .bind(rowid)
+                .bind(target_bytes)
+                .execute(&mut *tx)
+                .await?;
+
+            tx.commit().await?;
+            Ok(())
+        }
+        .await;
+
+        if let Err(e) = save_result {
+            log::warn!("Failed to save vector cache to DB for \"{trimmed}\": {e}");
+        }
+
+        // 5. Store in RAM cache
         if let Ok(mut cache) = self.embedding_cache.write() {
             cache.insert(trimmed, vec.clone());
         }
 
-        Ok(vec)
+        Some(vec)
     }
 
     // ========================================================================

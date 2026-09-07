@@ -139,6 +139,7 @@ pub struct WordSpec {
     pub min_similarity: Option<f32>,
     pub fixed_word: Option<String>,
     pub exclude: Option<Vec<String>>,
+    pub target_text: Option<String>,
 }
 
 impl WordSpec {
@@ -189,8 +190,15 @@ impl WordSpec {
         self
     }
 
+    #[allow(dead_code)]
     pub fn similar_to_q8_str(mut self, encoded: impl Into<String>) -> Self {
         self.target_vec_q8_str = Some(encoded.into());
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn similar_to_text(mut self, text: impl Into<String>) -> Self {
+        self.target_text = Some(text.into());
         self
     }
 }
