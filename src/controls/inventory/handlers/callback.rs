@@ -23,7 +23,7 @@ pub async fn handle_inventory_callback(
         _ => {
             let _ = bot
                 .answer_callback_query(q.id)
-                .text("Это меню устарело.")
+                .text("Это меню устарело")
                 .show_alert(true)
                 .await;
             let _ = bot.delete_message(chat_id, msg_id).await;

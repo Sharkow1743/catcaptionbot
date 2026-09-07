@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use teloxide::prelude::*;
 use teloxide::types::{ChatId, Message, MessageId, ParseMode};
+use tokio::spawn;
 
 use super::default_selection;
 use crate::controls::inventory::renderer::{
@@ -22,6 +23,15 @@ pub async fn display_inventory(
 ) -> HandlerResult {
     let chat_id = msg.chat.id;
 
+    if session.last_content.is_some() {
+        session.last_content = None;
+    }
+    if let Some(last_roll_msg_id) = session.last_roll_msg_id {
+        let _ = bot
+            .edit_message_reply_markup(msg.chat.id, last_roll_msg_id)
+            .await;
+    }
+
     // Update passive loyalty to current moment before displaying
     let now = unix_timestamp();
     if let Some(equipped) = session.inventory.get_mut("equip", 0) {
@@ -38,15 +48,20 @@ pub async fn display_inventory(
         let _ = bot.delete_message(chat_id, old_view.ctrl_msg_id).await;
     }
 
+    // Switch reply keyboard to inventory mode via a separate message
+    let _ = bot
+        .send_message(chat_id, "Котейнеры")
+        .reply_markup(inventory_menu_keyboard())
+        .await;
+
     let selected = default_selection(&session);
 
-    // 1. Send Message 1: Showcase Card (switches Reply KB to inventory mode with only "Получить")
+    // 1. Send Message 1: Showcase Card (no ReplyKeyboardMarkup attached, can now be edited)
     let (image, caption, _) = render_card_content(&session, &app_state.asset_manager, selected);
     let card_msg = bot
         .send_photo(chat_id, image.into())
         .caption(caption)
         .parse_mode(ParseMode::Html)
-        .reply_markup(inventory_menu_keyboard())
         .await?;
 
     if let Some(size) = card_msg

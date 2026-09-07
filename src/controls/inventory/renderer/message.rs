@@ -115,11 +115,12 @@ fn build_detail_text(
             };
 
             format!(
-                "Имя: {}\nРедкость: {}\nПреданность: {:+}% ({})",
+                "Имя: {}\nРедкость: {}\nПреданность: {:+}% ({})\n{}",
                 slot.cat.image_text(),
                 slot.cat.rarity().name(),
                 loyalty_pct,
-                status_text
+                status_text,
+                slot.cat.domain_stats()
             )
         }
         None => "Слот пуст.".to_string(),

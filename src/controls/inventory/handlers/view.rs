@@ -1,7 +1,5 @@
-use futures::TryFutureExt;
 use teloxide::prelude::*;
 use teloxide::types::ChatId;
-use tokio::spawn;
 
 use crate::controls::inventory::renderer::{render_card_in_place, render_controls_in_place};
 use crate::controls::inventory::types::InventoryView;
@@ -37,9 +35,8 @@ pub(super) async fn apply_inventory_view(
         )
     );
 
-    // Optional: Ignore or handle errors from individual renders
-    let _ = card_res;
-    let _ = ctrl_res;
+    card_res?;
+    ctrl_res?;
 
     // 3. Persist session and update dialogue state
     dialogue.update(State::Inventory(view)).await?;

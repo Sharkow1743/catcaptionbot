@@ -52,13 +52,14 @@ pub async fn render_card_in_place(
     let (image, caption, _) = render_card_content(session, asset_manager, selected);
 
     let photo = InputMediaPhoto::new(image.into())
-        .caption(caption.clone())
+        .caption(caption)
         .parse_mode(ParseMode::Html);
 
-    match bot
+    let res = bot
         .edit_message_media(chat_id, card_msg_id, InputMedia::Photo(photo))
-        .await
-    {
+        .await;
+
+    match res {
         Ok(edited) => {
             if let Some(size) = edited
                 .photo()
@@ -74,11 +75,8 @@ pub async fn render_card_in_place(
         Err(err) => {
             let err_msg = err.to_string();
             if !err_msg.contains("message is not modified") {
-                let _ = bot
-                    .edit_message_caption(chat_id, card_msg_id)
-                    .caption(caption)
-                    .parse_mode(ParseMode::Html)
-                    .await;
+                log::warn!("Failed to edit showcase card media: {err_msg}");
+                return Err(err.into());
             }
         }
     }
