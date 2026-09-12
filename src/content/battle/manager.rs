@@ -5,7 +5,7 @@ use teloxide::types::{ChatId, ParseMode};
 
 use super::types::{
     BattleMode, BattleOutcome, BattleSession, BattleStatus, MatchmakingTicket, PlayerBattleState,
-    QueueResult, WinReason,
+    QueueResult, WinReason, tier_to_score,
 };
 use crate::content::rarity::Rarity;
 use crate::controls::battle_active_keyboard;
@@ -51,6 +51,7 @@ pub async fn queue_random_match(
     bot: &Bot,
     user_id: u64,
     chat_id: i64,
+    username: Option<String>,
 ) -> anyhow::Result<QueueResult> {
     if is_in_active_battle(session_mgr, user_id).await {
         return Ok(QueueResult::AlreadyInBattle);
@@ -77,8 +78,8 @@ pub async fn queue_random_match(
                 starts_at_epoch_ms: now + 2500,
             },
             created_at_ms: now,
-            player_a: PlayerBattleState::new(ticket.user_id, ticket.chat_id),
-            player_b: Some(PlayerBattleState::new(user_id, chat_id)),
+            player_a: PlayerBattleState::new(ticket.user_id, ticket.chat_id, ticket.username),
+            player_b: Some(PlayerBattleState::new(user_id, chat_id, username)),
         };
 
         session_mgr
@@ -93,6 +94,7 @@ pub async fn queue_random_match(
             id: ticket_id,
             user_id,
             chat_id,
+            username,
             mode: BattleMode::random(),
             created_at_ms: now,
         };
@@ -110,6 +112,7 @@ pub async fn create_invite_duel(
     bot: &Bot,
     user_id: u64,
     chat_id: i64,
+    username: Option<String>,
 ) -> anyhow::Result<(ShortId, String)> {
     if is_in_active_battle(session_mgr, user_id).await {
         anyhow::bail!("Вы уже находитесь в активной дуэли!");
@@ -124,7 +127,7 @@ pub async fn create_invite_duel(
         mode: BattleMode::random(),
         status: BattleStatus::WaitingForOpponent,
         created_at_ms: now,
-        player_a: PlayerBattleState::new(user_id, chat_id),
+        player_a: PlayerBattleState::new(user_id, chat_id, username),
         player_b: None,
     };
 
@@ -133,8 +136,8 @@ pub async fn create_invite_duel(
         .await;
 
     let me = bot.get_me().await?;
-    let username = me.username();
-    let invite_link = format!("https://t.me/{}?start=battle_{}", username, battle_id);
+    let bot_username = me.username();
+    let invite_link = format!("https://t.me/{}?start=battle_{}", bot_username, battle_id);
 
     Ok((battle_id, invite_link))
 }
@@ -144,23 +147,24 @@ pub async fn join_invite_duel(
     bot: &Bot,
     user_id: u64,
     chat_id: i64,
+    username: Option<String>,
     battle_id: ShortId,
 ) -> anyhow::Result<()> {
     let mut battle = session_mgr
         .get_ephemeral::<BattleSession>(battle_id)
         .await
-        .ok_or_else(|| anyhow::anyhow!("Дуэль не найдена или срок действия ссылки истёк"))?;
+        .ok_or_else(|| anyhow::anyhow!("Дуэль не найдена или срок действия ссылки истек"))?;
 
     if battle.status != BattleStatus::WaitingForOpponent {
         anyhow::bail!("Дуэль уже началась или завершена");
     }
 
     if battle.player_a.user_id == user_id {
-        anyhow::bail!("Вы не можете вступить в свою собственную дуэль");
+        anyhow::bail!("Нельзя вступить в собственную дуэль");
     }
 
     if is_in_active_battle(session_mgr, user_id).await {
-        anyhow::bail!("Вы уже находитесь в другой активной дуэли");
+        anyhow::bail!("Вы уже участвуете в другой дуэли");
     }
 
     cancel_waiting(session_mgr, user_id).await;
@@ -168,7 +172,7 @@ pub async fn join_invite_duel(
     let now = unix_timestamp();
     let player_a_id = battle.player_a.user_id;
 
-    battle.player_b = Some(PlayerBattleState::new(user_id, chat_id));
+    battle.player_b = Some(PlayerBattleState::new(user_id, chat_id, username));
     battle.status = BattleStatus::Countdown {
         starts_at_epoch_ms: now + 2500,
     };
@@ -243,8 +247,9 @@ pub async fn on_battle_roll(
     let mut finish_outcome: Option<BattleOutcome> = None;
     let now = unix_timestamp();
     let roll_tier = rarity.tier();
-    let rarity_name = rarity.name();
-    let rarity_id = rarity.id();
+    let rarity_name = rarity.name().to_string();
+    let rarity_id = rarity.id().to_string();
+    let gained_score = tier_to_score(roll_tier);
 
     session_mgr
         .mutate_ephemeral::<BattleSession, _>(battle_id, |battle| {
@@ -253,29 +258,22 @@ pub async fn on_battle_roll(
             }
 
             let is_player_a = battle.player_a.user_id == user_id;
-            let (player, opp_rolls, opp_best_tier, opponent_id) = if is_player_a {
+            let (player, opponent_id) = if is_player_a {
                 (
                     &mut battle.player_a,
-                    battle.player_b.as_ref().map(|p| p.rolls_count).unwrap_or(0),
-                    battle
-                        .player_b
-                        .as_ref()
-                        .map(|p| p.best_tier)
-                        .unwrap_or(-999.0),
                     battle.player_b.as_ref().map(|p| p.user_id).unwrap_or(0),
                 )
             } else if let Some(ref mut p_b) = battle.player_b {
-                (
-                    p_b,
-                    battle.player_a.rolls_count,
-                    battle.player_a.best_tier,
-                    battle.player_a.user_id,
-                )
+                (p_b, battle.player_a.user_id)
             } else {
                 return;
             };
 
             player.rolls_count += 1;
+            player.score += gained_score;
+            player.last_rarity_name = rarity_name.clone();
+            player.last_tier = roll_tier;
+
             if roll_tier > player.best_tier || player.best_tier < -900.0 {
                 player.best_tier = roll_tier;
                 player.best_rarity_id = rarity_id.clone();
@@ -284,7 +282,6 @@ pub async fn on_battle_roll(
             }
 
             match &battle.mode {
-                // Target Rarity mode: instant win on >= target_tier
                 BattleMode::TargetRarity { target_tier, .. } => {
                     if roll_tier >= *target_tier {
                         finish_outcome = Some(BattleOutcome::Winner {
@@ -296,27 +293,18 @@ pub async fn on_battle_roll(
                         });
                     }
                 }
-                // Burst Sprint mode: check if both completed their roll allocation
-                BattleMode::BurstSprint { max_rolls, .. } => {
-                    if player.rolls_count >= *max_rolls && opp_rolls >= *max_rolls {
-                        if player.best_tier > opp_best_tier {
-                            finish_outcome = Some(BattleOutcome::Winner {
-                                winner_id: user_id,
-                                loser_id: opponent_id,
-                                reason: WinReason::BurstLimitCompleted,
-                            });
-                        } else if opp_best_tier > player.best_tier {
-                            finish_outcome = Some(BattleOutcome::Winner {
-                                winner_id: opponent_id,
-                                loser_id: user_id,
-                                reason: WinReason::BurstLimitCompleted,
-                            });
-                        } else {
-                            finish_outcome = Some(BattleOutcome::Draw);
-                        }
+                BattleMode::ThresholdRace { target_score, .. } => {
+                    if player.score >= *target_score {
+                        finish_outcome = Some(BattleOutcome::Winner {
+                            winner_id: user_id,
+                            loser_id: opponent_id,
+                            reason: WinReason::ScoreReached {
+                                score: player.score,
+                            },
+                        });
                     }
                 }
-                BattleMode::TimeAttack { .. } => {}
+                BattleMode::TimeAttack { .. } | BattleMode::ScoreAttack { .. } => {}
             }
         })
         .await;
@@ -335,26 +323,37 @@ pub fn start_battle_lifecycle(bot: Bot, session_mgr: SessionManager, battle_id: 
             return;
         };
 
-        let chat_id_a = battle.player_a.chat_id;
-        let chat_id_b = match battle.player_b.as_ref() {
-            Some(p) => p.chat_id,
+        let p_a = &battle.player_a;
+        let p_b = match battle.player_b.as_ref() {
+            Some(p) => p,
             None => return,
         };
 
+        let chat_id_a = p_a.chat_id;
+        let chat_id_b = p_b.chat_id;
+
+        let p_a_label = p_a.display_name();
+        let p_b_label = p_b.display_name();
+
+        let mode_title = battle.mode.title();
         let condition_desc = battle.mode.description();
-        let countdown_msg = format!(
-            "⚔️ <b>ДУЭЛЬ НАЗНАЧЕНА!</b>\n\n{}\n\n⏳ <b>Приготовьтесь: 3... 2... 1...</b>",
-            condition_desc
+
+        let countdown_for_a = format!(
+            "<b>ДУЭЛЬ НАЗНАЧЕНА</b>\n\n<b>Соперник:</b> {p_b_label}\n<b>Режим:</b> {mode_title}\n{condition_desc}\n\n<b>Приготовьтесь: 3... 2... 1...</b>"
+        );
+
+        let countdown_for_b = format!(
+            "<b>ДУЭЛЬ НАЗНАЧЕНА</b>\n\n<b>Соперник:</b> {p_a_label}\n<b>Режим:</b> {mode_title}\n{condition_desc}\n\n<b>Приготовьтесь: 3... 2... 1...</b>"
         );
 
         let _ = bot
-            .send_message(ChatId(chat_id_a), &countdown_msg)
+            .send_message(ChatId(chat_id_a), &countdown_for_a)
             .parse_mode(ParseMode::Html)
             .reply_markup(battle_active_keyboard())
             .await;
 
         let _ = bot
-            .send_message(ChatId(chat_id_b), &countdown_msg)
+            .send_message(ChatId(chat_id_b), &countdown_for_b)
             .parse_mode(ParseMode::Html)
             .reply_markup(battle_active_keyboard())
             .await;
@@ -384,20 +383,22 @@ pub fn start_battle_lifecycle(bot: Bot, session_mgr: SessionManager, battle_id: 
             return;
         }
 
-        let start_msg = "🔥 <b>СТАРТ! Жмите «Получить» на полную мощность!</b>";
+        let start_msg_for_a = format!("<b>СТАРТ!</b>\nПротивник: <b>{p_b_label}</b>");
+        let start_msg_for_b = format!("<b>СТАРТ!</b>\nПротивник: <b>{p_a_label}</b>");
+
         let _ = bot
-            .send_message(ChatId(chat_id_a), start_msg)
+            .send_message(ChatId(chat_id_a), start_msg_for_a)
             .parse_mode(ParseMode::Html)
             .reply_markup(battle_active_keyboard())
             .await;
         let _ = bot
-            .send_message(ChatId(chat_id_b), start_msg)
+            .send_message(ChatId(chat_id_b), start_msg_for_b)
             .parse_mode(ParseMode::Html)
             .reply_markup(battle_active_keyboard())
             .await;
 
         loop {
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            tokio::time::sleep(Duration::from_millis(250)).await;
             let current_now = unix_timestamp();
             let b = match session_mgr.get_ephemeral::<BattleSession>(battle_id).await {
                 Some(b) => b,
@@ -446,49 +447,286 @@ fn resolve_timeout_winner(battle: &BattleSession) -> BattleOutcome {
     if p_a.rolls_count == 0 && p_b.rolls_count == 0 {
         return BattleOutcome::Draw;
     }
-
-    if p_a.best_tier > p_b.best_tier {
-        BattleOutcome::Winner {
-            winner_id: p_a.user_id,
-            loser_id: p_b.user_id,
-            reason: WinReason::HighestTierInTime {
-                winning_tier: p_a.best_tier,
-                loser_tier: p_b.best_tier,
-            },
-        }
-    } else if p_b.best_tier > p_a.best_tier {
-        BattleOutcome::Winner {
+    if p_a.rolls_count == 0 {
+        return BattleOutcome::Winner {
             winner_id: p_b.user_id,
             loser_id: p_a.user_id,
-            reason: WinReason::HighestTierInTime {
-                winning_tier: p_b.best_tier,
-                loser_tier: p_a.best_tier,
-            },
-        }
-    } else if p_a.best_tier_timestamp_ms > 0
-        && p_b.best_tier_timestamp_ms > 0
-        && p_a.best_tier_timestamp_ms != p_b.best_tier_timestamp_ms
-    {
-        if p_a.best_tier_timestamp_ms < p_b.best_tier_timestamp_ms {
-            BattleOutcome::Winner {
-                winner_id: p_a.user_id,
-                loser_id: p_b.user_id,
-                reason: WinReason::TieBrokenByTime {
-                    diff_ms: p_b.best_tier_timestamp_ms - p_a.best_tier_timestamp_ms,
-                },
-            }
-        } else {
-            BattleOutcome::Winner {
-                winner_id: p_b.user_id,
-                loser_id: p_a.user_id,
-                reason: WinReason::TieBrokenByTime {
-                    diff_ms: p_a.best_tier_timestamp_ms - p_b.best_tier_timestamp_ms,
-                },
-            }
-        }
-    } else {
-        BattleOutcome::Draw
+            reason: WinReason::OpponentTimedOut,
+        };
     }
+    if p_b.rolls_count == 0 {
+        return BattleOutcome::Winner {
+            winner_id: p_a.user_id,
+            loser_id: p_b.user_id,
+            reason: WinReason::OpponentTimedOut,
+        };
+    }
+
+    match battle.mode {
+        BattleMode::ScoreAttack { .. } | BattleMode::ThresholdRace { .. } => {
+            if (p_a.score - p_b.score).abs() > f32::EPSILON {
+                if p_a.score > p_b.score {
+                    BattleOutcome::Winner {
+                        winner_id: p_a.user_id,
+                        loser_id: p_b.user_id,
+                        reason: WinReason::HighestScoreInTime {
+                            winning_score: p_a.score,
+                            loser_score: p_b.score,
+                        },
+                    }
+                } else {
+                    BattleOutcome::Winner {
+                        winner_id: p_b.user_id,
+                        loser_id: p_a.user_id,
+                        reason: WinReason::HighestScoreInTime {
+                            winning_score: p_b.score,
+                            loser_score: p_a.score,
+                        },
+                    }
+                }
+            } else if p_a.best_tier > p_b.best_tier {
+                BattleOutcome::Winner {
+                    winner_id: p_a.user_id,
+                    loser_id: p_b.user_id,
+                    reason: WinReason::HighestTierInTime {
+                        winning_tier: p_a.best_tier,
+                        loser_tier: p_b.best_tier,
+                        winning_rarity: p_a.best_rarity_name.clone(),
+                        loser_rarity: p_b.best_rarity_name.clone(),
+                    },
+                }
+            } else if p_b.best_tier > p_a.best_tier {
+                BattleOutcome::Winner {
+                    winner_id: p_b.user_id,
+                    loser_id: p_a.user_id,
+                    reason: WinReason::HighestTierInTime {
+                        winning_tier: p_b.best_tier,
+                        loser_tier: p_a.best_tier,
+                        winning_rarity: p_b.best_rarity_name.clone(),
+                        loser_rarity: p_a.best_rarity_name.clone(),
+                    },
+                }
+            } else {
+                BattleOutcome::Draw
+            }
+        }
+        BattleMode::TargetRarity { .. } | BattleMode::TimeAttack { .. } => {
+            if p_a.best_tier > p_b.best_tier {
+                BattleOutcome::Winner {
+                    winner_id: p_a.user_id,
+                    loser_id: p_b.user_id,
+                    reason: WinReason::HighestTierInTime {
+                        winning_tier: p_a.best_tier,
+                        loser_tier: p_b.best_tier,
+                        winning_rarity: p_a.best_rarity_name.clone(),
+                        loser_rarity: p_b.best_rarity_name.clone(),
+                    },
+                }
+            } else if p_b.best_tier > p_a.best_tier {
+                BattleOutcome::Winner {
+                    winner_id: p_b.user_id,
+                    loser_id: p_a.user_id,
+                    reason: WinReason::HighestTierInTime {
+                        winning_tier: p_b.best_tier,
+                        loser_tier: p_a.best_tier,
+                        winning_rarity: p_b.best_rarity_name.clone(),
+                        loser_rarity: p_a.best_rarity_name.clone(),
+                    },
+                }
+            } else if p_a.best_tier_timestamp_ms > 0
+                && p_b.best_tier_timestamp_ms > 0
+                && p_a.best_tier_timestamp_ms != p_b.best_tier_timestamp_ms
+            {
+                if p_a.best_tier_timestamp_ms < p_b.best_tier_timestamp_ms {
+                    BattleOutcome::Winner {
+                        winner_id: p_a.user_id,
+                        loser_id: p_b.user_id,
+                        reason: WinReason::TieBrokenByTime {
+                            diff_ms: p_b.best_tier_timestamp_ms - p_a.best_tier_timestamp_ms,
+                            winning_rarity: p_a.best_rarity_name.clone(),
+                        },
+                    }
+                } else {
+                    BattleOutcome::Winner {
+                        winner_id: p_b.user_id,
+                        loser_id: p_a.user_id,
+                        reason: WinReason::TieBrokenByTime {
+                            diff_ms: p_a.best_tier_timestamp_ms - p_b.best_tier_timestamp_ms,
+                            winning_rarity: p_b.best_rarity_name.clone(),
+                        },
+                    }
+                }
+            } else {
+                BattleOutcome::Draw
+            }
+        }
+    }
+}
+
+fn format_player_summary(
+    me: &PlayerBattleState,
+    opp: &PlayerBattleState,
+    outcome: &BattleOutcome,
+    duration_secs: f64,
+    mode: &BattleMode,
+) -> String {
+    let opp_label = opp.display_name();
+    let is_score_mode = mode.is_score_mode();
+
+    let (header, status_text, reason_text, winning_cat_highlight) = match outcome {
+        BattleOutcome::Winner {
+            winner_id,
+            loser_id: _,
+            reason,
+        } => {
+            let won = *winner_id == me.user_id;
+            let header = if won {
+                "<b>ПОБЕДА!</b>"
+            } else {
+                "<b>ПОРАЖЕНИЕ</b>"
+            };
+
+            let status = if won {
+                format!("Вы одержали победу над <b>{opp_label}</b>!")
+            } else {
+                format!("Победитель дуэли: <b>{opp_label}</b>.")
+            };
+
+            let reason_desc = match reason {
+                WinReason::TargetReached { rarity_name } => {
+                    if won {
+                        format!("Вы первым получили кота требуемой редкости: <b>{rarity_name}</b>!")
+                    } else {
+                        format!(
+                            "Соперник <b>{opp_label}</b> первым получил кота редкости <b>{rarity_name}</b>!"
+                        )
+                    }
+                }
+                WinReason::HighestTierInTime {
+                    winning_tier,
+                    loser_tier,
+                    winning_rarity,
+                    loser_rarity,
+                } => {
+                    if won {
+                        format!(
+                            "Ваш кот <b>{winning_rarity}</b> ({winning_tier:+.2}) превзошел кота соперника <b>{loser_rarity}</b> ({loser_tier:+.2})!"
+                        )
+                    } else {
+                        format!(
+                            "Кот соперника <b>{winning_rarity}</b> ({winning_tier:+.2}) превзошел вашего кота <b>{loser_rarity}</b> ({loser_tier:+.2})!"
+                        )
+                    }
+                }
+                WinReason::TieBrokenByTime {
+                    diff_ms,
+                    winning_rarity,
+                } => {
+                    let diff_s = (*diff_ms as f64) / 1000.0;
+                    if won {
+                        format!(
+                            "Равный ранг котов (<b>{winning_rarity}</b>), но вы нашли своего на <b>{diff_s:.2} с</b> быстрее!"
+                        )
+                    } else {
+                        format!(
+                            "Равный ранг котов (<b>{winning_rarity}</b>), но <b>{opp_label}</b> нашел своего на <b>{diff_s:.2} с</b> быстрее!"
+                        )
+                    }
+                }
+                WinReason::ScoreReached { score } => {
+                    if won {
+                        format!("Вы первым достигли целевой отметки в <b>{score:.0}</b> очков!")
+                    } else {
+                        format!(
+                            "Соперник <b>{opp_label}</b> первым набрал <b>{score:.0}</b> очков!"
+                        )
+                    }
+                }
+                WinReason::HighestScoreInTime {
+                    winning_score,
+                    loser_score,
+                } => {
+                    if won {
+                        format!(
+                            "Вы набрали больше очков за отведенное время ({winning_score:.0} против {loser_score:.0})!"
+                        )
+                    } else {
+                        format!(
+                            "Соперник <b>{opp_label}</b> набрал больше очков ({winning_score:.0} против {loser_score:.0})!"
+                        )
+                    }
+                }
+                WinReason::OpponentSurrendered => {
+                    if won {
+                        format!("Соперник <b>{opp_label}</b> сдался.")
+                    } else {
+                        "Вы сдались.".to_string()
+                    }
+                }
+                WinReason::OpponentTimedOut => {
+                    if won {
+                        format!("Соперник <b>{opp_label}</b> не совершил ни одного броска.")
+                    } else {
+                        "Время вышло: вы не сделали ни одного броска.".to_string()
+                    }
+                }
+                WinReason::BothZeroRolls => {
+                    "Ни один из участников не совершил бросков.".to_string()
+                }
+            };
+
+            let highlight = if won {
+                format!("• Ваш победный кот: <b>{}</b>", me.best_rarity_name)
+            } else {
+                format!(
+                    "• Победный кот соперника: <b>{}</b> (последний: <b>{}</b>)",
+                    opp.best_rarity_name, opp.last_rarity_name
+                )
+            };
+
+            (header.to_string(), status, reason_desc, highlight)
+        }
+        BattleOutcome::Draw => (
+            "<b>НИЧЬЯ</b>".to_string(),
+            format!("Поединок против <b>{opp_label}</b> завершился с равным счетом."),
+            "Ни один из игроков не получил преимущества.".to_string(),
+            String::new(),
+        ),
+        BattleOutcome::Cancelled => (
+            "<b>ДУЭЛЬ ОТМЕНЕНА</b>".to_string(),
+            format!("Поединок против <b>{opp_label}</b> был прерван."),
+            "Матч завершен досрочно.".to_string(),
+            String::new(),
+        ),
+    };
+
+    let highlight_section = if winning_cat_highlight.is_empty() {
+        String::new()
+    } else {
+        format!("\n{winning_cat_highlight}\n")
+    };
+
+    let stats_section = if is_score_mode {
+        format!(
+            "<b>Результаты:</b>\n├ <b>Вы:</b> {} бросков | Очки: <b>{:.0}</b> | Лучший: <b>{}</b>\n└ <b>{opp_label}:</b> {} бросков | Очки: <b>{:.0}</b> | Лучший: <b>{}</b>",
+            me.rolls_count,
+            me.score,
+            me.best_rarity_name,
+            opp.rolls_count,
+            opp.score,
+            opp.best_rarity_name
+        )
+    } else {
+        format!(
+            "<b>Результаты:</b>\n├ <b>Вы:</b> {} бросков | Лучший: <b>{}</b>\n└ <b>{opp_label}:</b> {} бросков | Лучший: <b>{}</b>",
+            me.rolls_count, me.best_rarity_name, opp.rolls_count, opp.best_rarity_name
+        )
+    };
+
+    format!(
+        "<b>ДУЭЛЬ ЗАВЕРШЕНА</b>\n\n{}\n{}\n• <i>{}</i>{}\n{}\n\n<b>Чистое время:</b> {:.1} с",
+        header, status_text, reason_text, highlight_section, stats_section, duration_secs
+    )
 }
 
 pub async fn finalize_battle(
@@ -510,6 +748,55 @@ pub async fn finalize_battle(
         None => return Ok(()),
     };
 
+    // User statistic
+    match &outcome {
+        BattleOutcome::Winner {
+            winner_id,
+            loser_id,
+            ..
+        } => {
+            let _ = session_mgr
+                .mutate_session(*winner_id, |s| s.stats.battles_won += 1)
+                .await;
+            let _ = session_mgr
+                .mutate_session(*loser_id, |s| s.stats.battles_lost += 1)
+                .await;
+        }
+        BattleOutcome::Draw => {
+            let _ = session_mgr
+                .mutate_session(p_a.user_id, |s| s.stats.battles_draw += 1)
+                .await;
+            let _ = session_mgr
+                .mutate_session(p_b.user_id, |s| s.stats.battles_draw += 1)
+                .await;
+        }
+        BattleOutcome::Cancelled => {}
+    }
+
+    match &outcome {
+        BattleOutcome::Winner {
+            winner_id,
+            loser_id,
+            ..
+        } => {
+            let _ = session_mgr
+                .mutate_session(*winner_id, |s| s.stats.battles_won += 1)
+                .await;
+            let _ = session_mgr
+                .mutate_session(*loser_id, |s| s.stats.battles_lost += 1)
+                .await;
+        }
+        BattleOutcome::Draw => {
+            let _ = session_mgr
+                .mutate_session(p_a.user_id, |s| s.stats.battles_draw += 1)
+                .await;
+            let _ = session_mgr
+                .mutate_session(p_b.user_id, |s| s.stats.battles_draw += 1)
+                .await;
+        }
+        BattleOutcome::Cancelled => {}
+    }
+
     let now = unix_timestamp();
     let started_at = match battle.status {
         BattleStatus::Active {
@@ -521,73 +808,17 @@ pub async fn finalize_battle(
     };
     let duration_secs = ((now - started_at).max(0) as f64) / 1000.0;
 
-    let (result_header, reason_text) = match &outcome {
-        BattleOutcome::Winner {
-            winner_id, reason, ..
-        } => {
-            let winner_mention = if *winner_id == p_a.user_id {
-                "Игрок 1"
-            } else {
-                "Игрок 2"
-            };
-            let desc = match reason {
-                WinReason::TargetReached { rarity_name } => {
-                    format!("Первым получен кот редкости <b>{rarity_name}</b>!")
-                }
-                WinReason::HighestTierInTime {
-                    winning_tier,
-                    loser_tier,
-                } => {
-                    format!("Высший ранг кота ({winning_tier:+.2} против {loser_tier:+.2})!")
-                }
-                WinReason::TieBrokenByTime { diff_ms } => {
-                    let diff_s = (*diff_ms as f64) / 1000.0;
-                    format!(
-                        "Ничья по рангу, но победный кот найден на <b>{diff_s:.2}с</b> быстрее!"
-                    )
-                }
-                WinReason::BurstLimitCompleted => "Победа по итогам серии бросков!".to_string(),
-                WinReason::OpponentSurrendered => "Соперник сдался!".to_string(),
-                WinReason::OpponentTimedOut => "Время дуэли истекло!".to_string(),
-                WinReason::BothZeroRolls => "Никто не сделал ни одного броска.".to_string(),
-            };
-            (format!("🏆 <b>ПОБЕДИТЕЛЬ: {winner_mention}</b>"), desc)
-        }
-        BattleOutcome::Draw => (
-            "🤝 <b>НИЧЬЯ!</b>".to_string(),
-            "Игроки показали абсолютно равные результаты!".to_string(),
-        ),
-        BattleOutcome::Cancelled => (
-            "❌ <b>ДУЭЛЬ ОТМЕНЕНА</b>".to_string(),
-            "Матч был прерван.".to_string(),
-        ),
-    };
-
-    let summary = format!(
-        "🏁 <b>ДУЭЛЬ ЗАВЕРШЕНА</b>\n
-        {}
-        📌 <i>{}</i>\n
-        📊 <b>Результаты дуэли:</b>
-        ├ 👤 <b>Игрок 1:</b> {} бросков | Лучший: <b>{}</b>
-        └ 👤 <b>Игрок 2:</b> {} бросков | Лучший: <b>{}</b>\n
-        ⏱ <b>Чистое время:</b> {:.1} сек",
-        result_header,
-        reason_text,
-        p_a.rolls_count,
-        p_a.best_rarity_name,
-        p_b.rolls_count,
-        p_b.best_rarity_name,
-        duration_secs
-    );
+    let summary_a = format_player_summary(p_a, p_b, &outcome, duration_secs, &battle.mode);
+    let summary_b = format_player_summary(p_b, p_a, &outcome, duration_secs, &battle.mode);
 
     let _ = bot
-        .send_message(ChatId(p_a.chat_id), &summary)
+        .send_message(ChatId(p_a.chat_id), &summary_a)
         .parse_mode(ParseMode::Html)
         .reply_markup(crate::controls::main_menu_keyboard())
         .await;
 
     let _ = bot
-        .send_message(ChatId(p_b.chat_id), &summary)
+        .send_message(ChatId(p_b.chat_id), &summary_b)
         .parse_mode(ParseMode::Html)
         .reply_markup(crate::controls::main_menu_keyboard())
         .await;

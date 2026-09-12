@@ -17,11 +17,9 @@ use image::edit::{preprocess_image, process_image};
 use image::fetch_image;
 use rarity::{Rarity, RarityManager};
 
-pub use domain::{Domain, DomainManager};
-pub use loyalty::Loyality;
 pub use types::{Cat, Content};
 
-mod battle;
+pub mod battle;
 pub mod domain;
 mod image;
 pub mod inventory;
