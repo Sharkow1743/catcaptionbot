@@ -1,19 +1,30 @@
 use std::str::FromStr;
-
 use strum::{Display, EnumIter, EnumString};
 use teloxide::dispatching::DpHandlerDescription;
 use teloxide::prelude::*;
 use teloxide::types::{Message, Update};
 
-/// Internal IDs use snake_case (for logs, analytics, future i18n keys).
-/// Display strings use the actual Russian button labels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, Display, EnumIter)]
 #[strum(ascii_case_insensitive)]
 pub enum KbCommand {
     #[strum(serialize = "get", to_string = "Получить")]
     Get,
-    #[strum(serialize = "inventory", to_string = "Котейнеры")]
+    #[strum(serialize = "inventory", to_string = "Мои коты")]
     Inventory,
+    #[strum(serialize = "battles", to_string = "Дуэли")]
+    Battles,
+    #[strum(serialize = "stats", to_string = "Статистика")]
+    Stats,
+    #[strum(serialize = "random_battle", to_string = "Случайная дуэль")]
+    RandomBattle,
+    #[strum(serialize = "invite_battle", to_string = "Позвать друга")]
+    InviteBattle,
+    #[strum(serialize = "cancel_queue", to_string = "Отменить поиск")]
+    CancelQueue,
+    #[strum(serialize = "surrender", to_string = "Сдаться")]
+    Surrender,
+    #[strum(serialize = "back", to_string = "В главное меню")]
+    Back,
 }
 
 impl KbCommand {

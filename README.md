@@ -127,7 +127,15 @@ Battles **must reset all modifiers to a clean baseline at battle start**, regard
 
 # TODO
 
-- implement battles
+- rewrite text
+  - start command text
 - rarities overhaul
   - replace placeholder domains
-  - make better displaying
+  - make rarities display domain icon
+- add data version and migration system
+- add leaderboard
+  - battle
+  - general
+  - donation
+- make ui and ux better
+- add monetization

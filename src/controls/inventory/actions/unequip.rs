@@ -2,7 +2,7 @@ use crate::session::UserSession;
 
 pub fn unequip_current(session: &mut UserSession) -> Result<usize, String> {
     if session.inventory.get("equip", 0).is_none() {
-        return Err("Слот экипировки уже пуст".to_string());
+        return Err("С собой никого".to_string());
     }
 
     let has_space = session
@@ -12,13 +12,13 @@ pub fn unequip_current(session: &mut UserSession) -> Result<usize, String> {
         .unwrap_or(false);
 
     if !has_space {
-        return Err("В инвентаре нет свободного места!".to_string());
+        return Err("Все коробки заняты".to_string());
     }
 
     let cat_slot = session
         .inventory
         .take("equip", 0)
-        .ok_or_else(|| "Ошибка при снятии кота".to_string())?;
+        .ok_or_else(|| "Ошибка при перемещении кота".to_string())?;
 
     match session.inventory.push("inventory", cat_slot) {
         Ok(()) => {
@@ -32,7 +32,7 @@ pub fn unequip_current(session: &mut UserSession) -> Result<usize, String> {
         }
         Err(returned_slot) => {
             session.inventory.set("equip", 0, returned_slot);
-            Err("В инвентаре нет свободного места!".to_string())
+            Err("Все коробки заняты".to_string())
         }
     }
 }

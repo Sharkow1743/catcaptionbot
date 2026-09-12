@@ -17,13 +17,12 @@ pub async fn handle_inventory_callback(
     dialogue: DialogueState,
     mut session: UserSession,
 ) -> HandlerResult {
-    // Only accept callbacks from the currently active control message
     let current_view = match dialogue.get().await {
         Ok(Some(State::Inventory(view))) if view.ctrl_msg_id == msg_id => view,
         _ => {
             let _ = bot
                 .answer_callback_query(q.id)
-                .text("Это меню устарело")
+                .text("Меню устарело")
                 .show_alert(true)
                 .await;
             let _ = bot.delete_message(chat_id, msg_id).await;
@@ -75,7 +74,7 @@ pub async fn handle_inventory_callback(
             Ok(()) => {
                 let _ = bot
                     .answer_callback_query(q.id)
-                    .text("Вы взяли кота с собой")
+                    .text("Кот взят с собой")
                     .await;
                 let next_view = InventoryView {
                     selected: InventorySlot::Equip,
@@ -105,7 +104,7 @@ pub async fn handle_inventory_callback(
             Ok(new_bag_idx) => {
                 let _ = bot
                     .answer_callback_query(q.id)
-                    .text("Вы выложили кота")
+                    .text("Кот перемещен в коробку")
                     .await;
                 let next_view = InventoryView {
                     selected: InventorySlot::Bag(new_bag_idx),
@@ -131,9 +130,6 @@ pub async fn handle_inventory_callback(
             }
         }
     } else if let Some(target_slot_str) = data.strip_prefix("inv:act:release:") {
-        // Ask for confirmation instead of releasing immediately —
-        // inventory management is central here, so a mis-tap shouldn't
-        // permanently lose a cat.
         let slot_to_release = if target_slot_str == "equip" {
             Some(InventorySlot::Equip)
         } else if let Some(idx_str) = target_slot_str.strip_prefix("bag:") {

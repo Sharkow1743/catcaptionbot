@@ -39,8 +39,6 @@ pub fn render_card_content(
     }
 }
 
-/// Renders the clean, forwardable showcase photo. No buttons attached —
-/// this message is meant to be forwarded as-is to show off a cat.
 pub async fn render_card_in_place(
     bot: &Bot,
     chat_id: ChatId,

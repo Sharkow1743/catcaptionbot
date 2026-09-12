@@ -1,8 +1,8 @@
 use teloxide::prelude::*;
 use teloxide::types::{
-    ChatId, InputRichBlock, InputRichBlockBlockQuotation, InputRichBlockButtons,
-    InputRichBlockDivider, InputRichBlockParagraph, InputRichMessage, MessageId, RichMessageButton,
-    RichText,
+    ChatId, InputRichBlock, InputRichBlockButtons, InputRichBlockDivider, InputRichBlockParagraph,
+    InputRichBlockSectionHeading, InputRichMessage, MessageId, RichMessageButton, RichText,
+    RichTextBold, RichTextItalic,
 };
 
 use crate::controls::inventory::types::InventorySlot;
@@ -10,9 +10,6 @@ use crate::session::UserSession;
 
 const GRID_COLUMNS: usize = 2;
 
-/// Builds the sole interactive surface: a 2-column grid of every slot
-/// (equip pinned first, then bag), a status/detail panel for whichever
-/// slot is selected, and a contextual action row (or release confirmation).
 pub fn build_rich_inventory_message(
     session: &UserSession,
     selected: InventorySlot,
@@ -20,23 +17,31 @@ pub fn build_rich_inventory_message(
 ) -> InputRichMessage {
     let mut blocks: Vec<InputRichBlock> = Vec::new();
 
-    blocks.push(InputRichBlock::Paragraph(InputRichBlockParagraph {
+    blocks.push(InputRichBlock::Heading(InputRichBlockSectionHeading {
         text: RichText::from("Ваши коты"),
+        size: 2,
     }));
 
-    for chunk in build_grid_buttons(session, selected).chunks(GRID_COLUMNS) {
+    if let Some(equip_button) = build_equip_button(session, selected) {
         blocks.push(InputRichBlock::Buttons(
-            InputRichBlockButtons::new(chunk.to_vec()).align("center"),
+            InputRichBlockButtons::new(vec![equip_button]).align("center"),
         ));
+    }
+
+    let bag_buttons = build_bag_buttons(session, selected);
+    if !bag_buttons.is_empty() {
+        blocks.push(InputRichBlock::Divider(InputRichBlockDivider {}));
+        for chunk in bag_buttons.chunks(GRID_COLUMNS) {
+            blocks.push(InputRichBlock::Buttons(
+                InputRichBlockButtons::new(chunk.to_vec()).align("center"),
+            ));
+        }
     }
 
     blocks.push(InputRichBlock::Divider(InputRichBlockDivider {}));
 
-    blocks.push(InputRichBlock::Blockquote(InputRichBlockBlockQuotation {
-        blocks: vec![InputRichBlock::Paragraph(InputRichBlockParagraph {
-            text: RichText::from(build_detail_text(session, selected, pending_release)),
-        })],
-        credit: None,
+    blocks.push(InputRichBlock::Paragraph(InputRichBlockParagraph {
+        text: build_detail_text(session, selected, pending_release),
     }));
 
     if let Some(action_row) = build_action_row(session, selected, pending_release) {
@@ -50,80 +55,72 @@ pub fn build_rich_inventory_message(
     InputRichMessage::blocks(blocks)
 }
 
-fn build_grid_buttons(session: &UserSession, selected: InventorySlot) -> Vec<RichMessageButton> {
-    let mut grid_buttons: Vec<RichMessageButton> = Vec::new();
+fn build_equip_button(session: &UserSession, selected: InventorySlot) -> Option<RichMessageButton> {
+    let slot = session.inventory.get("equip", 0)?;
+    let icon = slot.cat.rarity().domain_icon();
+    let name = format!("{} {}", icon, slot.cat.image_text());
+    let is_selected = selected == InventorySlot::Equip;
 
-    let equip_item = session.inventory.get("equip", 0);
-    let equip_selected = selected == InventorySlot::Equip;
-    if let Some(slot) = equip_item {
-        let name = slot.cat.image_text();
-        let label = if equip_selected {
-            format!("◢ ◇ {name}")
-        } else {
-            format!("◇ {name}")
-        };
-
-        grid_buttons.push(RichMessageButton::callback(
-            RichText::from(label),
-            "inv:sel:equip",
-        ));
+    let mut button = RichMessageButton::callback(RichText::from(name), "inv:sel:equip");
+    if is_selected {
+        button = button.style("primary");
     }
+    Some(button)
+}
 
-    if let Some(bag) = session.inventory.category("inventory") {
-        for (idx, slot) in bag.indexed_items() {
-            let name = slot.cat.image_text();
-            let is_selected = selected == InventorySlot::Bag(idx);
-            let label = if is_selected {
-                format!("◢ ⌂ {name}")
-            } else {
-                format!("⌂ {name}")
-            };
-            grid_buttons.push(RichMessageButton::callback(
-                RichText::from(label),
-                format!("inv:sel:bag:{idx}"),
-            ));
+fn build_bag_buttons(session: &UserSession, selected: InventorySlot) -> Vec<RichMessageButton> {
+    let mut buttons: Vec<RichMessageButton> = Vec::new();
+
+    let Some(bag) = session.inventory.category("inventory") else {
+        return buttons;
+    };
+
+    for (idx, slot) in bag.indexed_items() {
+        let icon = slot.cat.rarity().domain_icon();
+        let name = format!("{} {}", icon, slot.cat.image_text());
+        let is_selected = selected == InventorySlot::Bag(idx);
+
+        let mut button =
+            RichMessageButton::callback(RichText::from(name), format!("inv:sel:bag:{idx}"));
+        if is_selected {
+            button = button.style("primary");
         }
+        buttons.push(button);
     }
 
-    grid_buttons
+    buttons
 }
 
 fn build_detail_text(
     session: &UserSession,
     selected: InventorySlot,
     pending_release: Option<InventorySlot>,
-) -> String {
+) -> RichText {
     if pending_release == Some(selected) {
-        return "Внимание: точно отпустить этого кота?\nЭто действие необратимо.".to_string();
+        return RichText::from(vec![
+            RichText::from("Точно отпустить этого кота?\nЭто действие "),
+            RichText::from(RichTextBold::new("необратимо")),
+        ]);
     }
 
     let (cat_type, idx) = selected.target();
     match session.inventory.get(cat_type, idx) {
         Some(slot) => {
-            let loyalty = slot.cat.loyalty_level();
-            let loyalty_pct = (loyalty * 100.0).round() as i32;
-            let status_text = if loyalty >= 0.6 {
-                "Преданный"
-            } else if loyalty >= 0.2 {
-                "Дружелюбный"
-            } else if loyalty > -0.2 {
-                "Нейтральный"
-            } else if loyalty > -0.6 {
-                "Недовольный"
-            } else {
-                "Обиженный"
-            };
+            let (_, bond_display) = slot.cat.loyalty_status();
 
-            format!(
-                "Имя: {}\nРедкость: {}\nПреданность: {:+}% ({})\n{}",
-                slot.cat.image_text(),
-                slot.cat.rarity().name(),
-                loyalty_pct,
-                status_text,
-                slot.cat.domain_stats()
-            )
+            RichText::from(vec![
+                RichText::from(RichTextBold::new(slot.cat.desc())),
+                RichText::from(format!("\n{bond_display}")),
+            ])
         }
-        None => "Слот пуст.".to_string(),
+        None => {
+            let empty_text = if cat_type == "equip" {
+                "С собой никого"
+            } else {
+                "Пусто"
+            };
+            RichText::from(RichTextItalic::new(empty_text))
+        }
     }
 }
 
@@ -134,7 +131,8 @@ fn build_action_row(
 ) -> Option<Vec<RichMessageButton>> {
     if pending_release == Some(selected) {
         return Some(vec![
-            RichMessageButton::callback(RichText::from("Да, отпустить"), "inv:confirm_release"),
+            RichMessageButton::callback(RichText::from("Отпустить"), "inv:confirm_release")
+                .style("danger"),
             RichMessageButton::callback(RichText::from("Отмена"), "inv:cancel_release"),
         ]);
     }
@@ -147,14 +145,16 @@ fn build_action_row(
     Some(match selected {
         InventorySlot::Equip => vec![
             RichMessageButton::callback(RichText::from("Выложить"), "inv:act:unequip"),
-            RichMessageButton::callback(RichText::from("Отпустить"), "inv:act:release:equip"),
+            RichMessageButton::callback(RichText::from("Отпустить"), "inv:act:release:equip")
+                .style("danger"),
         ],
         InventorySlot::Bag(b_idx) => vec![
             RichMessageButton::callback(RichText::from("Взять"), format!("inv:act:equip:{b_idx}")),
             RichMessageButton::callback(
                 RichText::from("Отпустить"),
                 format!("inv:act:release:bag:{b_idx}"),
-            ),
+            )
+            .style("danger"),
         ],
     })
 }

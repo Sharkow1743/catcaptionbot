@@ -7,6 +7,7 @@ pub fn release_cat(session: &mut UserSession, slot: InventorySlot) -> Result<(),
         return Err("Кот не найден".to_string());
     }
 
+    session.stats.total_released += 1;
     session.fire_trigger("on_cat_release");
     Ok(())
 }

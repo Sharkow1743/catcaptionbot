@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use teloxide::prelude::*;
 use teloxide::types::{ChatId, Message, MessageId, ParseMode};
-use tokio::spawn;
 
 use super::default_selection;
 use crate::controls::inventory::renderer::{
@@ -50,13 +49,13 @@ pub async fn display_inventory(
 
     // Switch reply keyboard to inventory mode via a separate message
     let _ = bot
-        .send_message(chat_id, "Котейнеры")
+        .send_message(chat_id, "Ваши коты")
         .reply_markup(inventory_menu_keyboard())
         .await;
 
     let selected = default_selection(&session);
 
-    // 1. Send Message 1: Showcase Card (no ReplyKeyboardMarkup attached, can now be edited)
+    // 1. Send Message 1: Showcase Card
     let (image, caption, _) = render_card_content(&session, &app_state.asset_manager, selected);
     let card_msg = bot
         .send_photo(chat_id, image.into())
@@ -80,7 +79,7 @@ pub async fn display_inventory(
         app_state.session_manager.save_session(&session).await?;
     }
 
-    // 2. Send Message 2: Rich Message grid — the interactive surface
+    // 2. Send Message 2: Rich Message grid
     let rich_msg = build_rich_inventory_message(&session, selected, None);
     let ctrl_msg = bot.send_rich_message(chat_id, rich_msg).await?;
 
@@ -109,7 +108,6 @@ fn spawn_inventory_updater(
     user_id: u64,
 ) {
     tokio::spawn(async move {
-        // Dynamic backoff intervals: updates frequently at first, slows down, and stops after ~3.5 min idle
         let intervals = [
             Duration::from_secs(4),
             Duration::from_secs(4),
@@ -129,13 +127,11 @@ fn spawn_inventory_updater(
         for interval in intervals {
             tokio::time::sleep(interval).await;
 
-            // 1. Verify that user is still looking at this specific inventory message
             let current_view = match dialogue.get().await {
                 Ok(Some(State::Inventory(view))) if view.ctrl_msg_id == ctrl_msg_id => view,
-                _ => break, // User exited or opened another menu -> stop updater
+                _ => break,
             };
 
-            // 2. Load session and tick passive loyalty
             let Ok(mut session) = app_state.session_manager.get_session(user_id).await else {
                 break;
             };
@@ -162,21 +158,17 @@ fn spawn_inventory_updater(
                 }
             }
 
-            // If no cats can regenerate (all at max loyalty or inventory empty), stop updates
             if !any_can_regen {
                 break;
             }
 
-            // 3. Skip Telegram API call if none of the visible integer loyalty percentages changed
             if current_loyalty_state == last_loyalty_state {
                 continue;
             }
             last_loyalty_state = current_loyalty_state;
 
-            // 4. Save session with updated timestamps
             let _ = app_state.session_manager.save_session(&session).await;
 
-            // 5. Render updated controls message
             if render_controls_in_place(
                 &bot,
                 chat_id,
