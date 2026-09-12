@@ -1,7 +1,9 @@
 import argparse
+import glob
 import math
 import os
 import sqlite3
+from collections import defaultdict
 from enum import Enum
 
 import numpy as np
@@ -26,10 +28,11 @@ class POS(Enum):
     UNKNOWN = "UNKNOWN"
 
 
-def get_pos_weight_and_combined_pos(pos_str: str) -> tuple[float, POS]:
+def get_pos_weight_and_combined_pos(pos_str: str, rank: int = 1) -> tuple[float, POS]:
     """
-    Maps pymorphy3 POS tags to POS enum and assigns weights optimized
-    for hilarious and punchy phrase generation.
+    Maps pymorphy3 POS tags to POS enum and assigns weights.
+    If a word has an UNKNOWN POS but is used enough (rank <= 25000),
+    it gets a normal weight (1.0) like standard content words.
     """
     match pos_str:
         case "NOUN":
@@ -54,9 +57,14 @@ def get_pos_weight_and_combined_pos(pos_str: str) -> tuple[float, POS]:
             return 0.0, POS.NPRO
         case "NUMR":
             return 0.0, POS.NUMR
-        case "UNKNOWN":
-            return 0.0, POS.UNKNOWN
+        case "UNKNOWN" | None:
+            # If used enough (popular rank), promote to normal content word weight
+            if rank <= 25000:
+                return 1.0, POS.UNKNOWN
+            return 0.2, POS.UNKNOWN
         case _:
+            if rank <= 25000:
+                return 1.0, POS.UNKNOWN
             return 0.2, POS.UNKNOWN
 
 
@@ -94,10 +102,111 @@ def get_custom_weight(word: str) -> float | None:
 
 
 def is_valid_word(word: str) -> bool:
-    """Ensures input word is alphabetic or hyphenated Cyrillic."""
+    """Ensures input word is purely Cyrillic and longer than 1 character."""
     if not word or len(word) <= 1:
         return False
-    return all(c.isalpha() or c == "-" for c in word)
+    valid_chars = set("абвгдеёжзийклмнопрстуфхцчшщъыьэюя")
+    return all(c in valid_chars for c in word)
+
+
+def parse_leipzig_file(file_path: str) -> dict[str, int]:
+    """Parses tab-separated Leipzig frequency files, splitting hyphenated words into separate parts."""
+    counts = {}
+    if not os.path.exists(file_path):
+        return counts
+
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            parts = line.strip().split("\t")
+            if len(parts) >= 3:
+                raw_word = parts[1].strip().lower()
+                try:
+                    c = int(parts[2].strip())
+                except ValueError:
+                    continue
+
+                # Divide words with '-' into separate words
+                for sub_w in raw_word.split("-"):
+                    if is_valid_word(sub_w):
+                        counts[sub_w] = counts.get(sub_w, 0) + c
+    return counts
+
+
+def parse_words_txt(file_path: str) -> list[str]:
+    """Parses line-by-line ranked words file, splitting hyphenated words into separate parts."""
+    words = []
+    if not os.path.exists(file_path):
+        return words
+
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            raw_word = line.strip().lower()
+            # Divide words with '-' into separate words
+            for sub_w in raw_word.split("-"):
+                if is_valid_word(sub_w):
+                    words.append(sub_w)
+    return words
+
+
+def build_unified_word_list(words_dir: str, target_size: int = 50000) -> list[str]:
+    """
+    Combines words from different source files using weighted popularity scores:
+      - words.txt (Primary Source, highest weight)
+      - web-public (High weight)
+      - news-2023 (Medium weight)
+      - news-2024 (Very low impact)
+      - wikipedia (Supplemental weight if present)
+    """
+    source_weights = {
+        "words_txt": 10.0,      # Highest priority
+        "web_public": 2.5,     # Web public corpus
+        "wikipedia": 1.5,      # Wikipedia corpus
+        "news_2023": 0.8,      # Moderate impact
+        "news_2024": 0.05,     # Very low impact
+    }
+
+    words_txt_path = os.path.join(words_dir, "words.txt")
+    web_public_files = glob.glob(os.path.join(words_dir, "*web-public*"))
+    wiki_files = glob.glob(os.path.join(words_dir, "*wikipedia*"))
+    news_2023_files = glob.glob(os.path.join(words_dir, "*news_2023*"))
+    news_2024_files = glob.glob(os.path.join(words_dir, "*news_2024*"))
+
+    combined_scores: dict[str, float] = defaultdict(float)
+
+    # 1. Primary source: words.txt
+    if os.path.exists(words_txt_path):
+        print(f"Reading primary source: {words_txt_path}")
+        raw_words = parse_words_txt(words_txt_path)
+        for rank, w in enumerate(raw_words, start=1):
+            rank_score = 1.0 / (rank ** 0.5)
+            combined_scores[w] += rank_score * source_weights["words_txt"]
+    else:
+        print(f"Warning: Primary file '{words_txt_path}' not found!")
+
+    # 2. Leipzig frequency corpora
+    def add_freq_corpus(files: list[str], source_weight: float, label: str):
+        for fpath in files:
+            print(f"Reading corpus ({label}): {os.path.basename(fpath)}")
+            counts = parse_leipzig_file(fpath)
+            if not counts:
+                continue
+            max_c = max(counts.values())
+            for w, c in counts.items():
+                freq_score = math.log1p(c) / math.log1p(max_c)
+                combined_scores[w] += freq_score * source_weight
+
+    add_freq_corpus(web_public_files, source_weights["web_public"], "web-public")
+    add_freq_corpus(wiki_files, source_weights["wikipedia"], "wikipedia")
+    add_freq_corpus(news_2023_files, source_weights["news_2023"], "news-2023")
+    add_freq_corpus(news_2024_files, source_weights["news_2024"], "news-2024 (low impact)")
+
+    # 3. Sort by blended popularity score
+    sorted_words = sorted(combined_scores.items(), key=lambda item: item[1], reverse=True)
+    selected_words = [w for w, score in sorted_words[:target_size]]
+
+    print(f"\nUnified candidate pool: {len(combined_scores)} unique split words.")
+    print(f"Selected top {len(selected_words)} words (target: {target_size}).")
+    return selected_words
 
 
 def load_cached_embeddings(db_file: str) -> dict[str, bytes]:
@@ -125,9 +234,7 @@ def load_cached_embeddings(db_file: str) -> dict[str, bytes]:
         conn.close()
         print(f"Loaded {len(cached)} cached word embeddings.")
     except Exception as e:
-        print(
-            f"Notice: Could not load cache from existing DB ({e}). Will recompute embeddings."
-        )
+        print(f"Notice: Could not load cache from existing DB ({e}). Will recompute embeddings.")
         cached = {}
 
     return cached
@@ -149,9 +256,7 @@ class LocalOnnxEmbedder:
 
         tokenizer_path = os.path.join(model_dir, "tokenizer.json")
         if not os.path.exists(tokenizer_path):
-            raise FileNotFoundError(
-                f"Could not find 'tokenizer.json' in '{model_dir}'."
-            )
+            raise FileNotFoundError(f"Could not find 'tokenizer.json' in '{model_dir}'.")
 
         print(f"Loading ONNX model from: {model_path}")
         print(f"Loading Tokenizer from: {tokenizer_path}")
@@ -159,12 +264,9 @@ class LocalOnnxEmbedder:
         self.tokenizer = Tokenizer.from_file(tokenizer_path)
         self.session = ort.InferenceSession(model_path)
 
-        # Detect model vector output dimension automatically
         sample_emb = self.embed(["тест"])
         self.vector_dim = sample_emb.shape[1]
-        print(
-            f"Model initialized successfully. Detected Vector Dimension: {self.vector_dim}"
-        )
+        print(f"Model initialized successfully. Detected Vector Dimension: {self.vector_dim}")
 
     def embed(self, texts: list[str], batch_size: int = 256) -> np.ndarray:
         all_embeddings = []
@@ -192,7 +294,7 @@ class LocalOnnxEmbedder:
             }
 
             outputs = self.session.run(None, inputs)
-            last_hidden_state = outputs[0]  # Shape: [batch_size, seq_len, hidden_dim]
+            last_hidden_state = outputs[0]
 
             # Mean pooling weighted by attention mask
             mask_expanded = np.expand_dims(attention_mask, -1)
@@ -211,7 +313,7 @@ class LocalOnnxEmbedder:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Build or update word database with embeddings using local ONNX model."
+        description="Build or update 50,000 word database with embeddings, splitting hyphenated words."
     )
     parser.add_argument(
         "-f",
@@ -220,10 +322,10 @@ def main():
         help="Force recomputation of all embeddings from scratch.",
     )
     parser.add_argument(
-        "-i",
-        "--input",
-        default="../words.txt",
-        help="Path to input text file containing words (default: ../words.txt).",
+        "-w",
+        "--words-dir",
+        default="../words",
+        help="Path to directory containing corpora files and words.txt (default: ../words).",
     )
     parser.add_argument(
         "-d",
@@ -237,70 +339,63 @@ def main():
         default="../robert-tiny2",
         help="Path to local ONNX model directory (default: ../robert-tiny2).",
     )
+    parser.add_argument(
+        "-s",
+        "--size",
+        type=int,
+        default=50000,
+        help="Target number of words (default: 50000).",
+    )
     args = parser.parse_args()
 
-    input_file = args.input
+    words_dir = args.words_dir
     db_file = args.db
     model_dir = args.model
+    target_size = args.size
 
-    if not os.path.exists(input_file):
-        print(f"Error: Input file '{input_file}' not found!")
+    if not os.path.exists(words_dir):
+        print(f"Error: Words directory '{words_dir}' not found!")
         exit(1)
 
     if not os.path.exists(model_dir):
         print(f"Error: Model directory '{model_dir}' not found!")
         exit(1)
 
-    # 1. Load cached embeddings if database exists and force option is not set
+    # 1. Load cached embeddings if database exists
     cached_embeddings = {}
     if not args.force:
         cached_embeddings = load_cached_embeddings(db_file)
     else:
-        print(
-            "Force flag specified (-f/--force). Recomputing all embeddings from scratch."
-        )
+        print("Force flag specified (-f/--force). Recomputing all embeddings from scratch.")
 
-    # 2. Read and parse words with pymorphy3
+    # 2. Build prioritized word list of surface forms (with hyphens split)
+    selected_words = build_unified_word_list(words_dir, target_size=target_size)
+
+    # 3. Only inspect POS tag of surface word (no lemmatization)
     morph = pymorphy3.MorphAnalyzer(lang="ru")
-    print(f"Reading and parsing words from '{input_file}'...")
+    print("\nAnalyzing POS on surface word forms and computing weights...")
 
     words_buffer = []
-    seen_words = set()
-    count = 0
+    for rank, word in enumerate(selected_words, start=1):
+        parses = morph.parse(word)
+        pos_str = str(parses[0].tag.POS) if (parses and parses[0].tag.POS) else "UNKNOWN"
 
-    with open(input_file, "r", encoding="utf-8") as f:
-        for line in f:
-            word = line.strip().lower()
-            if not is_valid_word(word) or word in seen_words:
-                continue
+        final_weight = get_custom_weight(word)
+        if final_weight is None:
+            pos_weight, combined_pos = get_pos_weight_and_combined_pos(pos_str, rank=rank)
+            rank_weight = get_rank_weight(rank)
+            len_weight = get_len_weight(len(word))
+            final_weight = pos_weight * rank_weight * len_weight
+        else:
+            _, combined_pos = get_pos_weight_and_combined_pos(pos_str, rank=rank)
 
-            seen_words.add(word)
-            count += 1
+        words_buffer.append((rank, word, combined_pos.value, final_weight, rank))
 
-            parses = morph.parse(word)
-            pos_str = (
-                str(parses[0].tag.POS) if (parses and parses[0].tag.POS) else "UNKNOWN"
-            )
-
-            final_weight = get_custom_weight(word)
-            if not final_weight:
-                pos_weight, combined_pos = get_pos_weight_and_combined_pos(pos_str)
-                rank_weight = get_rank_weight(count)
-                len_weight = get_len_weight(len(word))
-
-                final_weight = pos_weight * rank_weight * len_weight
-
-            words_buffer.append((count, word, combined_pos.value, final_weight, count))
-
-    # 3. Compute missing embeddings using Local ONNX Embedder
-    missing_words = [
-        item[1] for item in words_buffer if item[1] not in cached_embeddings
-    ]
+    # 4. Compute missing embeddings
+    missing_words = [item[1] for item in words_buffer if item[1] not in cached_embeddings]
 
     if missing_words:
-        print(
-            f"Found {len(missing_words)} words missing embeddings. Loading ONNX model from '{model_dir}'..."
-        )
+        print(f"\nFound {len(missing_words)} words missing embeddings. Loading ONNX model from '{model_dir}'...")
         embedder = LocalOnnxEmbedder(model_dir=model_dir)
         vector_dim = embedder.vector_dim
 
@@ -311,15 +406,12 @@ def main():
             cached_embeddings[w] = emb.tobytes()
         print("New embeddings computed successfully.")
     else:
-        print(
-            "All words already have cached embeddings! Detecting vector dimension from cache..."
-        )
-        # Sample one cached embedding to determine vector dimension
+        print("\nAll words already have cached embeddings! Detecting vector dimension from cache...")
         first_bytes = next(iter(cached_embeddings.values()))
         vector_dim = len(first_bytes) // 4
 
-    # 4. Save/Update SQLite Database
-    print(f"Writing updated database to '{db_file}' (Vector Dim: {vector_dim})...")
+    # 5. Save to SQLite Database
+    print(f"\nWriting updated database to '{db_file}' (Vector Dim: {vector_dim})...")
     conn = sqlite3.connect(db_file)
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
@@ -338,13 +430,12 @@ def main():
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_pos ON words(pos)")
-    cursor.execute(
-        f"CREATE VIRTUAL TABLE vec_words USING vec0(embedding float[{vector_dim}]);"
-    )
+    cursor.execute(f"CREATE VIRTUAL TABLE vec_words USING vec0(embedding float[{vector_dim}]);")
 
     DB_COMMIT_BATCH = 2000
+    total_count = len(words_buffer)
 
-    for i in range(0, count, DB_COMMIT_BATCH):
+    for i in range(0, total_count, DB_COMMIT_BATCH):
         chunk_meta = words_buffer[i : i + DB_COMMIT_BATCH]
 
         words_db_rows = []
@@ -369,10 +460,10 @@ def main():
         )
 
         conn.commit()
-        print(f"Processed {min(i + DB_COMMIT_BATCH, count)} / {count} words...")
+        print(f"Processed {min(i + DB_COMMIT_BATCH, total_count)} / {total_count} words...")
 
     conn.close()
-    print(f"\nSuccess! Updated '{db_file}' with {count} words.")
+    print(f"\nSuccess! Updated '{db_file}' with {total_count} words.")
 
 
 if __name__ == "__main__":

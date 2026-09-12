@@ -47,15 +47,16 @@ impl Default for Config {
                 .ok()
                 .or_else(|| Some("socks5h://127.0.0.1:9050".to_string())),
             morphology_db_path: std::env::var("MORPHOLOGY_DB")
-                .unwrap_or_else(|_| "morphology.db".to_string()),
-            words_db_path: std::env::var("WORDS_DB").unwrap_or_else(|_| "words.db".to_string()),
+                .unwrap_or_else(|_| "assets/text/morphology.db".to_string()),
+            words_db_path: std::env::var("WORDS_DB")
+                .unwrap_or_else(|_| "assets/text/words.db".to_string()),
             app_db_path: std::env::var("APP_DB").unwrap_or_else(|_| "app_database".to_string()),
             model_dir: std::env::var("MODEL_DIR").unwrap_or_else(|_| "robert-tiny2".to_string()),
             image_cache_dir: std::env::var("IMAGE_CACHE_DIR")
                 .unwrap_or_else(|_| ".image_cache".to_string()),
             connect_timeout_secs: 5,
             sentences_db_path: std::env::var("SENTENCES_DB")
-                .unwrap_or_else(|_| "sentences.db".to_string()),
+                .unwrap_or_else(|_| "assets/text/sentences.db".to_string()),
         }
     }
 }

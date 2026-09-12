@@ -69,12 +69,12 @@ async fn main() -> anyhow::Result<()> {
     let asset_manager = AssetManager::new();
     asset_manager.register_static(
         "placeholder",
-        include_bytes!("../placeholder.jpg"),
+        include_bytes!("../assets/images/placeholder.jpg"),
         "placeholder.jpg",
     );
     asset_manager.register_static(
         "missing_cat",
-        include_bytes!("../missing_cat.jpg"),
+        include_bytes!("../assets/images/missing_cat.jpg"),
         "missing_cat.jpg",
     );
 

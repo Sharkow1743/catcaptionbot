@@ -1,3 +1,6 @@
+pub mod roll_guard;
+pub mod short_id;
+
 use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
