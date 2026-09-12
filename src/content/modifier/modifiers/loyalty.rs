@@ -5,6 +5,7 @@ use crate::content::domain::DomainManager;
 use crate::content::loyalty::Loyality;
 use crate::content::modifier::{HookArg, Modifier};
 use crate::content::rarity::RarityManager;
+use crate::controls::take::CatchContext;
 use crate::utils::unix_timestamp;
 use crate::{modifier, notice};
 
@@ -23,7 +24,7 @@ impl Modifier for Loyalty {
         "on_cat_equip",
         "on_cat_unequip",
     ];
-    const HOOKS: &'static [&'static str] = &["rarity_weights"];
+    const HOOKS: &'static [&'static str] = &["rarity_weights", "cat_catch_context"];
 
     fn is_active(&self) -> bool {
         self.has_equipped
@@ -43,59 +44,95 @@ impl Modifier for Loyalty {
         };
 
         let loyalty_level = active_slot.cat.loyalty_level();
+        let equipped_tier = active_slot.cat.rarity().tier();
         let equipped_domain_id = active_slot.cat.domain_id();
         let domain_mgr = DomainManager::global();
         let equipped_domain = domain_mgr.get_by_id(equipped_domain_id);
         let rarity_mgr = RarityManager::global();
 
+        let equipped_domain_weights = equipped_domain.clone();
+        let equipped_domain_catch = equipped_domain;
+
         hook.on::<HashMap<String, f32>>("rarity_weights", move |mut weights| {
             for (id, weight) in weights.iter_mut() {
                 if let Some(rarity) = rarity_mgr.get_by_id(id) {
-                    let tier_mult = Loyality::weight_multiplier(loyalty_level, rarity.tier());
-                    let domain_mult = if let Some(ref domain) = equipped_domain {
-                        domain.weight_multiplier(rarity.domain_id(), loyalty_level)
+                    let base_mult =
+                        Loyality::base_tier_multiplier(loyalty_level, rarity.tier(), equipped_tier);
+                    let domain_mult = if let Some(ref domain) = equipped_domain_weights {
+                        domain.weight_multiplier(rarity.domain_id(), loyalty_level, equipped_tier)
                     } else {
                         1.0
                     };
-                    *weight *= tier_mult * domain_mult;
+                    *weight *= base_mult * domain_mult;
                 }
             }
             weights
+        })
+        .on::<CatchContext>("cat_catch_context", move |mut ctx| {
+            let domain_mod = if let Some(ref domain) = equipped_domain_catch {
+                domain.catch_modifier(
+                    ctx.target_domain_id,
+                    ctx.target_tier,
+                    loyalty_level,
+                    ctx.time_since_last_roll_ms,
+                )
+            } else {
+                0.0
+            };
+
+            let loyalty_mod = if loyalty_level >= 0.0 {
+                loyalty_level * 0.12
+            } else {
+                loyalty_level * 0.35
+            };
+
+            ctx.probability = (ctx.probability + loyalty_mod + domain_mod).clamp(0.05, 0.98);
+
+            ctx
         })
     }
 
     fn on_trigger(&mut self, name: &str, session: &mut crate::session::UserSession) {
         let now = unix_timestamp();
 
-        // 1. Passive regeneration for all benched inventory cats
+        // Extract last_content info before borrowing session mutably
+        let (target_dom, target_tier) = session
+            .last_content
+            .as_ref()
+            .map(|c| (c.rarity().domain_id(), c.rarity().tier()))
+            .unwrap_or(("neutral", 0.0));
+
         if let Some(bag) = session.inventory.category_mut("inventory") {
             for slot in bag.items_mut() {
                 slot.cat.tick_loyalty(false, now);
             }
         }
 
-        // 2. Process equipped cat
         if let Some(equipped_slot) = session.inventory.get_mut("equip", 0) {
+            let domain = equipped_slot.cat.domain();
             equipped_slot.cat.tick_loyalty(true, now);
             let tier = equipped_slot.cat.rarity().tier();
 
             match name {
-                "on_roll" => {
-                    equipped_slot.cat.loyality.decay_roll(tier);
-                }
+                "on_roll" => equipped_slot
+                    .cat
+                    .loyality
+                    .decay_roll(tier, domain.roll_decay_multiplier()),
                 "on_cat_catch" => {
-                    equipped_slot.cat.loyality.decay_take(tier);
+                    let decay_mult = domain.take_decay_multiplier(target_dom, target_tier);
+                    equipped_slot.cat.loyality.decay_take(tier, decay_mult);
                 }
-                "on_cat_release" => {
-                    equipped_slot.cat.loyality.boost_release();
-                }
+                "on_cat_release" => equipped_slot
+                    .cat
+                    .loyality
+                    .boost_release(domain.release_boost_multiplier()),
                 _ => {}
             }
 
             self.has_equipped = true;
             self.level = equipped_slot.cat.loyalty_level();
             notice!(
-                "Loyalty of equipped cat ({}): {:+.2} (trigger: {})",
+                "Loyalty companion ({}): {:+.2} [{}]",
                 equipped_slot.cat.image_text(),
                 self.level,
                 name

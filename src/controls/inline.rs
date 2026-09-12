@@ -28,15 +28,7 @@ pub async fn handle_inline_callback(
 
     if data == "take_cat" {
         let _ = bot.answer_callback_query(q.id).await;
-        handle_take_cat(
-            &mut session,
-            bot,
-            chat_id,
-            msg_id,
-            &app_state.asset_manager,
-            &app_state.composer.quotes,
-        )
-        .await;
+        handle_take_cat(&mut session, bot, chat_id, msg_id, &app_state).await;
         app_state.session_manager.save_session(&session).await?;
     } else if data.starts_with("inv:") {
         handle_inventory_callback(bot, q, chat_id, msg_id, &data, app_state, dialogue, session)

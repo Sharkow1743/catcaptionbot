@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use crate::content::modifier::{HookArg, Modifier};
 use crate::content::rarity::RarityManager;
+use crate::controls::take::CatchContext;
 use crate::{modifier, notice};
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
@@ -20,7 +21,12 @@ pub struct Adrenaline {
 impl Modifier for Adrenaline {
     const ID: &'static str = "adrenaline";
     const TRIGGERS: &'static [&'static str] = &["on_roll", "on_cat_catch", "on_cat_escape"];
-    const HOOKS: &'static [&'static str] = &["rarity_weights", "image_edit", "text_image_edit"];
+    const HOOKS: &'static [&'static str] = &[
+        "rarity_weights",
+        "image_edit",
+        "text_image_edit",
+        "cat_catch_context",
+    ];
 
     fn is_active(&self) -> bool {
         self.level >= 0.5
@@ -36,19 +42,24 @@ impl Modifier for Adrenaline {
 
     fn apply_hook<'a>(
         &self,
-        _session: &crate::session::UserSession,
+        session: &crate::session::UserSession,
         hook: HookArg<'a>,
     ) -> HookArg<'a> {
         let level = self.level;
         let rarity_mgr = RarityManager::global();
+
+        let is_titan = session
+            .inventory
+            .get_ref("equip", 0)
+            .map(|s| s.cat.domain_id() == "titan")
+            .unwrap_or(false);
 
         hook.on::<HashMap<String, f32>>("rarity_weights", move |mut weights| {
             if level < 0.5 {
                 return weights;
             }
 
-            // Reverse bell (U-shaped distribution): extreme high and extreme low tiers are boosted
-            let intensity = (level - 0.5) * 1.5;
+            let intensity = (level - 0.5) * 0.8;
             for (id, weight) in weights.iter_mut() {
                 if let Some(rarity) = rarity_mgr.get_by_id(id) {
                     let tier_abs = rarity.tier().abs();
@@ -58,12 +69,32 @@ impl Modifier for Adrenaline {
             }
             weights
         })
+        .on::<CatchContext>("cat_catch_context", move |mut ctx: CatchContext| {
+            if level < 0.5 {
+                return ctx;
+            }
+
+            // Heavy Titan paws suffer double inertia on high speed
+            let mult = if is_titan { 1.8 } else { 1.0 };
+            let penalty = (level - 0.4) * 0.22 * mult;
+            ctx.probability = (ctx.probability - penalty).max(0.10);
+
+            if is_titan {
+                ctx.escape_reason = Some(
+                    "Тяжелые монолитные лапы Титана не успели схватить шустрого кота!".to_string(),
+                );
+            } else {
+                ctx.escape_reason =
+                    Some("Кот испугался вашей суеты и резких движений!".to_string());
+            }
+
+            ctx
+        })
         .on::<Image>("image_edit", move |image: Image| {
             if level < 0.5 {
                 return image;
             }
 
-            // Uncapped visual scaling
             let t = (level * 2.0 - 1.0).max(0.0);
             let intensity = t.powf(1.3);
 
@@ -74,10 +105,8 @@ impl Modifier for Adrenaline {
             };
             let mut canvas = surface.canvas();
 
-            // 1. Base image
             canvas.draw_image(&image, 0.0, 0.0, None);
 
-            // 2. Elliptical vignette
             let cx = w as f32 / 2.0;
             let cy = h as f32 / 2.0;
 
@@ -145,7 +174,6 @@ impl Modifier for Adrenaline {
             let rand_bipolar = || rand::random::<f32>() * 2.0 - 1.0;
             let scale = (h as f32 / 800.0).max(0.5);
 
-            // 1. Ghost double-vision passes
             if intensity > 0.25 {
                 let ghost_count = (1 + (intensity * 1.5).round() as usize).clamp(1, 5);
                 let ghost_disp = (2.0 + intensity * 10.0) * scale;
@@ -156,10 +184,8 @@ impl Modifier for Adrenaline {
                 }
             }
 
-            // 2. Base crisp text
             canvas.draw_image(&caption_img, 0.0, 0.0, None);
 
-            // 3. Per-character jitter
             let base_char_width = (42.0 * scale).max(6.0);
             let max_disp_x = (1.5 + intensity * 12.0) * scale;
             let max_disp_y = (0.8 + intensity * 7.0) * scale;
@@ -186,7 +212,6 @@ impl Modifier for Adrenaline {
                 x += slice_w;
             }
 
-            // 4. Horizontal glitch tearing
             if intensity > 0.35 {
                 let num_tears = ((intensity * 12.0).round() as usize).max(1);
                 let tear_max_disp = (5.0 + intensity * 30.0) * scale;
@@ -276,7 +301,20 @@ impl Modifier for Adrenaline {
                     let speed_factor = ((2.6 - t_eff) / (2.6 - 0.566)).clamp(0.0, 1.0).powf(2.4);
                     let streak_bonus = if recent_fast_count >= 3 { 1.25 } else { 1.0 };
                     let resistance = 1.0 / (1.0 + 2.0 * self.level.powi(2));
-                    let base_impulse = 0.28;
+
+                    let domain_bonus = session
+                        .inventory
+                        .get_ref("equip", 0)
+                        .map(|s| {
+                            if s.cat.domain_id() == "hazard" {
+                                1.35
+                            } else {
+                                1.0
+                            }
+                        })
+                        .unwrap_or(1.0);
+
+                    let base_impulse = 0.28 * domain_bonus;
                     let gain = base_impulse * speed_factor * resistance * streak_bonus;
 
                     self.level = (self.level + gain).max(0.0);
@@ -293,7 +331,7 @@ impl Modifier for Adrenaline {
                 notice!("Adrenaline reduced to {:.2}", self.level);
             }
             "on_cat_escape" => {
-                self.level *= 1.5;
+                self.level *= 1.3;
                 notice!("Adrenaline maintained at {:.2}", self.level);
             }
             _ => {}
