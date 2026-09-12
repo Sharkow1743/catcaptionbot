@@ -1,4 +1,5 @@
 mod rarities;
+use crate::content::domain::DomainManager;
 use crate::text::{Pos, WordSpec};
 use rand::distr::weighted::WeightedIndex;
 use rand::prelude::*;
@@ -14,6 +15,12 @@ pub trait Rarity: Send + Sync + Debug {
     fn id(&self) -> String;
     fn domain_id(&self) -> &'static str {
         "neutral"
+    }
+    fn domain_icon(&self) -> &'static str {
+        DomainManager::global()
+            .get_by_id(self.domain_id())
+            .map(|d| d.icon())
+            .unwrap_or("○")
     }
     /// Numeric tier representing how good the rarity is, standardized to [-1.0, 1.0]
     fn tier(&self) -> f32 {

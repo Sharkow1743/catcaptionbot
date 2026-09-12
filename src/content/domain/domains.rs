@@ -1,87 +1,68 @@
 use super::Domain;
 use crate::register_domain;
 
-// =========================================================================
-//  1. OCCULT DOMAIN
-// =========================================================================
-
 #[derive(Debug)]
-pub struct OccultDomain;
+pub struct NeutralDomain;
 
-impl Domain for OccultDomain {
+impl Domain for NeutralDomain {
     fn id(&self) -> &'static str {
-        "occult"
+        "neutral"
     }
     fn name(&self) -> &'static str {
-        "Оккультный"
+        "Обыденность"
     }
-    fn description(&self) -> &'static str {
-        "Древние запретные сущности. Направляет резонанс в Токсичные аномалии, подавляя Небесный свет."
-    }
-    fn resonant_domains(&self) -> &'static [&'static str] {
-        &["hazard"]
-    }
-    fn opposing_domains(&self) -> &'static [&'static str] {
-        &["celestial"]
+    fn icon(&self) -> &'static str {
+        "○"
     }
 }
-register_domain!(OccultDomain);
-
-// =========================================================================
-//  2. CELESTIAL DOMAIN
-// =========================================================================
+register_domain!(NeutralDomain);
 
 #[derive(Debug)]
-pub struct CelestialDomain;
+pub struct CyberDomain;
 
-impl Domain for CelestialDomain {
+impl Domain for CyberDomain {
     fn id(&self) -> &'static str {
-        "celestial"
+        "cyber"
     }
     fn name(&self) -> &'static str {
-        "Небесный"
+        "Кибернетика"
     }
-    fn description(&self) -> &'static str {
-        "Высший астральный свет. Направляет резонанс в Кибернетические матрицы, подавляя Оккультную тьму."
+    fn icon(&self) -> &'static str {
+        "◈"
     }
-    fn resonant_domains(&self) -> &'static [&'static str] {
-        &["cybernetic"]
+    fn primary_resonance(&self) -> Option<&'static str> {
+        Some("hazard")
     }
-    fn opposing_domains(&self) -> &'static [&'static str] {
-        &["occult"]
+    fn primary_opposing(&self) -> Option<&'static str> {
+        Some("occult")
+    }
+    fn secondary_opposing(&self) -> Option<&'static str> {
+        Some("celestial")
+    }
+    fn take_decay_multiplier(&self, target_domain: &str, _target_tier: f32) -> f32 {
+        if target_domain == "occult" || target_domain == "celestial" {
+            2.0
+        } else {
+            1.0
+        }
+    }
+    fn catch_modifier(
+        &self,
+        target_domain: &str,
+        _target_tier: f32,
+        _loyalty: f32,
+        _time_between_rolls_ms: i64,
+    ) -> f32 {
+        if target_domain == "hazard" {
+            0.20
+        } else if target_domain == "occult" || target_domain == "celestial" {
+            -0.25
+        } else {
+            0.05
+        }
     }
 }
-register_domain!(CelestialDomain);
-
-// =========================================================================
-//  3. CYBERNETIC DOMAIN
-// =========================================================================
-
-#[derive(Debug)]
-pub struct CyberneticDomain;
-
-impl Domain for CyberneticDomain {
-    fn id(&self) -> &'static str {
-        "cybernetic"
-    }
-    fn name(&self) -> &'static str {
-        "Кибернетический"
-    }
-    fn description(&self) -> &'static str {
-        "Синтетические сети и протоколы. Направляет резонанс в Токсичные среды, подавляя Небесную гармонию."
-    }
-    fn resonant_domains(&self) -> &'static [&'static str] {
-        &["hazard"]
-    }
-    fn opposing_domains(&self) -> &'static [&'static str] {
-        &["celestial"]
-    }
-}
-register_domain!(CyberneticDomain);
-
-// =========================================================================
-//  4. HAZARD DOMAIN
-// =========================================================================
+register_domain!(CyberDomain);
 
 #[derive(Debug)]
 pub struct HazardDomain;
@@ -91,42 +72,157 @@ impl Domain for HazardDomain {
         "hazard"
     }
     fn name(&self) -> &'static str {
-        "Токсичный"
+        "Аномалии"
     }
-    fn description(&self) -> &'static str {
-        "Радиоактивные и агрессивные мутации. Направляет резонанс в Оккультные бездны, подавляя Кибернетический порядок."
+    fn icon(&self) -> &'static str {
+        "⌬"
     }
-    fn resonant_domains(&self) -> &'static [&'static str] {
-        &["occult"]
+    fn primary_resonance(&self) -> Option<&'static str> {
+        Some("titan")
     }
-    fn opposing_domains(&self) -> &'static [&'static str] {
-        &["cybernetic"]
+    fn primary_opposing(&self) -> Option<&'static str> {
+        Some("cyber")
+    }
+    fn secondary_opposing(&self) -> Option<&'static str> {
+        Some("celestial")
+    }
+    fn roll_decay_multiplier(&self) -> f32 {
+        1.5
+    }
+    fn catch_modifier(
+        &self,
+        target_domain: &str,
+        _target_tier: f32,
+        _loyalty: f32,
+        _time_between_rolls_ms: i64,
+    ) -> f32 {
+        if target_domain == "titan" {
+            0.25
+        } else if target_domain != "hazard" && target_domain != "occult" {
+            -0.15
+        } else {
+            0.10
+        }
     }
 }
 register_domain!(HazardDomain);
 
-// =========================================================================
-//  5. NEUTRAL DOMAIN
-// =========================================================================
-
 #[derive(Debug)]
-pub struct NeutralDomain;
+pub struct TitanDomain;
 
-impl Domain for NeutralDomain {
+impl Domain for TitanDomain {
     fn id(&self) -> &'static str {
-        "neutral"
+        "titan"
     }
     fn name(&self) -> &'static str {
-        "Нейтральный"
+        "Титан"
     }
-    fn description(&self) -> &'static str {
-        "Универсальная основа мироздания. Не имеет резонансов и подавлений."
+    fn icon(&self) -> &'static str {
+        "▲"
     }
-    fn resonant_domains(&self) -> &'static [&'static str] {
-        &[]
+    fn primary_resonance(&self) -> Option<&'static str> {
+        Some("celestial")
     }
-    fn opposing_domains(&self) -> &'static [&'static str] {
-        &[]
+    fn primary_opposing(&self) -> Option<&'static str> {
+        Some("hazard")
+    }
+    fn secondary_opposing(&self) -> Option<&'static str> {
+        Some("occult")
+    }
+    fn roll_decay_multiplier(&self) -> f32 {
+        0.5
+    }
+    fn take_decay_multiplier(&self, _target_domain: &str, target_tier: f32) -> f32 {
+        if target_tier <= 0.0 { 0.0 } else { 1.0 }
+    }
+    fn catch_modifier(
+        &self,
+        target_domain: &str,
+        _target_tier: f32,
+        _loyalty: f32,
+        _time_between_rolls_ms: i64,
+    ) -> f32 {
+        if target_domain == "celestial" {
+            0.20
+        } else if target_domain == "hazard" {
+            -0.20
+        } else {
+            0.05
+        }
     }
 }
-register_domain!(NeutralDomain);
+register_domain!(TitanDomain);
+
+#[derive(Debug)]
+pub struct CelestialDomain;
+
+impl Domain for CelestialDomain {
+    fn id(&self) -> &'static str {
+        "celestial"
+    }
+    fn name(&self) -> &'static str {
+        "Небожители"
+    }
+    fn icon(&self) -> &'static str {
+        "☼"
+    }
+    fn primary_resonance(&self) -> Option<&'static str> {
+        Some("occult")
+    }
+    fn primary_opposing(&self) -> Option<&'static str> {
+        Some("titan")
+    }
+    fn secondary_opposing(&self) -> Option<&'static str> {
+        Some("cyber")
+    }
+    fn passive_regen_multiplier(&self) -> f32 {
+        1.5
+    }
+    fn take_decay_multiplier(&self, _target_domain: &str, target_tier: f32) -> f32 {
+        if target_tier < 0.0 { 2.0 } else { 0.8 }
+    }
+    fn catch_modifier(
+        &self,
+        target_domain: &str,
+        _target_tier: f32,
+        _loyalty: f32,
+        _time_between_rolls_ms: i64,
+    ) -> f32 {
+        if target_domain == "occult" {
+            0.25
+        } else if target_domain == "titan" {
+            -0.20
+        } else {
+            0.10
+        }
+    }
+}
+register_domain!(CelestialDomain);
+
+#[derive(Debug)]
+pub struct OccultDomain;
+
+impl Domain for OccultDomain {
+    fn id(&self) -> &'static str {
+        "occult"
+    }
+    fn name(&self) -> &'static str {
+        "Оккультизм"
+    }
+    fn icon(&self) -> &'static str {
+        "✦"
+    }
+    fn primary_resonance(&self) -> Option<&'static str> {
+        Some("cyber")
+    }
+    fn primary_opposing(&self) -> Option<&'static str> {
+        Some("celestial")
+    }
+    fn secondary_opposing(&self) -> Option<&'static str> {
+        Some("hazard")
+    }
+    fn release_boost_multiplier(&self) -> f32 {
+        2.0
+    }
+}
+register_domain!(OccultDomain);

@@ -51,10 +51,10 @@ const BORDER_MIN_MATCH_FRACTION: f32 = 0.98;
 
 // =========================================================================
 
-const MAIN_TTF: &[u8] = include_bytes!("../../../impact.ttf");
+const MAIN_TTF: &[u8] = include_bytes!("../../../assets/fonts/impact.ttf");
 static MAIN_TYPEFACE: OnceLock<Arc<Typeface>> = OnceLock::new();
 
-const BADGE_TTF: &[u8] = include_bytes!("../../../noto.ttf");
+const BADGE_TTF: &[u8] = include_bytes!("../../../assets/fonts/noto.ttf");
 static BADGE_TYPEFACE: OnceLock<Arc<Typeface>> = OnceLock::new();
 
 fn main_typeface() -> anyhow::Result<Arc<Typeface>> {
@@ -493,7 +493,19 @@ pub fn bake_rarity_bar(
     let fallback = font_fallback_chain();
 
     let percentage = RarityManager::global().rarity_percentage(rarity);
-    let label = format!("{} {:.2}% {}", rarity.name(), percentage, modifiers);
+    let mod_suffix = if modifiers.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" {}", modifiers.trim())
+    };
+
+    let label = format!(
+        "{} {} {:.2}%{}",
+        rarity.domain_icon(),
+        rarity.name(),
+        percentage,
+        mod_suffix
+    );
 
     let font_size = RARITY_FONT_SIZE * scale;
     let pad_x = RARITY_PAD_X * scale;
