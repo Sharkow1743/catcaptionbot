@@ -24,19 +24,10 @@ fn text(val: impl Into<String>) -> RichText {
 }
 
 fn table_cell(text: impl Into<RichText>, is_header: bool, align: &str) -> RichBlockTableCell {
-    table_cell_colspan(text, is_header, align, 1)
-}
-
-fn table_cell_colspan(
-    text: impl Into<RichText>,
-    is_header: bool,
-    align: &str,
-    colspan: u32,
-) -> RichBlockTableCell {
     RichBlockTableCell {
         text: Some(text.into()),
         is_header: Some(is_header),
-        colspan: Some(colspan),
+        colspan: Some(1),
         rowspan: Some(1),
         align: align.to_string(),
         valign: "middle".to_string(),
@@ -44,21 +35,45 @@ fn table_cell_colspan(
 }
 
 pub fn format_rarity_chance(pct: f32) -> String {
-    if pct <= 0.0 {
+    if pct <= 0.0 || !pct.is_finite() {
         "0%".to_string()
     } else if pct >= 1.0 {
         format!("{:.1}%", pct)
-    } else {
+    } else if pct >= 0.01 {
         format!("{:.2}%", pct)
+    } else if pct >= 0.001 {
+        format!("{:.3}%", pct)
+    } else if pct >= 0.0001 {
+        format!("{:.4}%", pct)
+    } else {
+        "<0.0001%".to_string()
     }
 }
 
 pub fn format_one_in_n(pct: f32) -> String {
-    if pct <= 0.0 {
+    if pct <= 0.0 || !pct.is_finite() {
         "—".to_string()
     } else {
-        let one_in_n = (100.0 / pct).round() as u64;
-        format!("1:{}", one_in_n.max(1))
+        let one_in_n = (100.0 / pct).round();
+        if one_in_n >= 1_000_000_000.0 {
+            let b = one_in_n / 1_000_000_000.0;
+            if b >= 10.0 || (b * 10.0).round() % 10.0 == 0.0 {
+                format!("1:{:.0}B", b.round())
+            } else {
+                format!("1:{:.1}B", b)
+            }
+        } else if one_in_n >= 1_000_000.0 {
+            let m = one_in_n / 1_000_000.0;
+            if m >= 10.0 || (m * 10.0).round() % 10.0 == 0.0 {
+                format!("1:{:.0}M", m.round())
+            } else {
+                format!("1:{:.1}M", m)
+            }
+        } else if one_in_n >= 10_000.0 {
+            format!("1:{:.0}k", (one_in_n / 1000.0).round())
+        } else {
+            format!("1:{}", (one_in_n as u64).max(1))
+        }
     }
 }
 
@@ -205,8 +220,8 @@ pub fn build_rich_stats_message(session: &UserSession) -> InputRichMessage {
             modified_weights_map
                 .get(&r.id())
                 .copied()
-                .unwrap_or(r.weight())
-                .max(0.0001)
+                .unwrap_or_else(|| r.weight())
+                .max(0.0)
         })
         .sum();
 
@@ -214,7 +229,7 @@ pub fn build_rich_stats_message(session: &UserSession) -> InputRichMessage {
     visible_rarities.sort_by(|a, b| b.tier().partial_cmp(&a.tier()).unwrap());
 
     let mut rarity_rows: Vec<Vec<RichBlockTableCell>> = vec![vec![
-        table_cell_colspan(bold("Редкость"), true, "left", 5),
+        table_cell(bold("Редкость"), true, "left"),
         table_cell(bold("Текущий шанс"), true, "center"),
         table_cell("", true, "right"),
         table_cell(bold("Множитель"), true, "right"),
@@ -230,8 +245,8 @@ pub fn build_rich_stats_message(session: &UserSession) -> InputRichMessage {
         let curr_weight = modified_weights_map
             .get(&r.id())
             .copied()
-            .unwrap_or(r.weight())
-            .max(0.0001);
+            .unwrap_or_else(|| r.weight())
+            .max(0.0);
 
         let curr_pct = if total_modified_weight > 0.0 {
             (curr_weight / total_modified_weight) * 100.0
@@ -258,7 +273,7 @@ pub fn build_rich_stats_message(session: &UserSession) -> InputRichMessage {
         let label = format!("{} {}", r.domain_icon(), r.name());
 
         rarity_rows.push(vec![
-            table_cell_colspan(text(label), false, "left", 5),
+            table_cell(text(label), false, "left"),
             table_cell(text(format_rarity_chance(curr_pct)), false, "center"),
             table_cell(text(format_one_in_n(curr_pct)), false, "center"),
             table_cell(text(delta_str), false, "right"),

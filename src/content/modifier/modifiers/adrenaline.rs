@@ -62,8 +62,13 @@ impl Modifier for Adrenaline {
             let intensity = (level - 0.5) * 0.8;
             for (id, weight) in weights.iter_mut() {
                 if let Some(rarity) = rarity_mgr.get_by_id(id) {
-                    let tier_abs = rarity.tier().abs();
-                    let mult = (intensity * tier_abs).exp();
+                    let tier = rarity.tier();
+                    let tier_factor = if tier > 0.0 {
+                        tier.min(0.65)
+                    } else {
+                        (-tier).min(0.8)
+                    };
+                    let mult = 1.0 + intensity * 0.45 * tier_factor;
                     *weight *= mult;
                 }
             }
@@ -317,7 +322,11 @@ impl Modifier for Adrenaline {
                     let base_impulse = 0.28 * domain_bonus;
                     let gain = base_impulse * speed_factor * resistance * streak_bonus;
 
-                    self.level = (self.level + gain).max(0.0);
+                    // Only gain adrenaline if below 1.0, capped at 1.0.
+                    // If level > 1.0, it will not gain anything and continues decaying down toward 1.0.
+                    if self.level < 1.0 {
+                        self.level = (self.level + gain).min(1.0);
+                    }
                 }
 
                 if self.level < 0.01 {
