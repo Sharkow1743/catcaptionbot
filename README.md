@@ -139,3 +139,4 @@ Battles **must reset all modifiers to a clean baseline at battle start**, regard
   - donation
 - make ui and ux better
 - add monetization
+- add inline command cat generation

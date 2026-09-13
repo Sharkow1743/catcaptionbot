@@ -18,7 +18,7 @@ anyhow = "1.0"
 fastembed = "5.17"
 rand = "0.10"
 reqwest = { version = "0.13.4", features = ["socks", "json"] }
-libsqlite3-sys = "0.30"
+libsqlite3-sys = { version = "0.30", features = ["bundled"] }
 sqlite-vec = "0.1"
 bytes = { version = "1.12", features = ["serde"] }
 flume = "0.12"

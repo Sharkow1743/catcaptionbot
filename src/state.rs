@@ -51,7 +51,8 @@ impl Default for Config {
             words_db_path: std::env::var("WORDS_DB")
                 .unwrap_or_else(|_| "assets/text/words.db".to_string()),
             app_db_path: std::env::var("APP_DB").unwrap_or_else(|_| "app_database".to_string()),
-            model_dir: std::env::var("MODEL_DIR").unwrap_or_else(|_| "robert-tiny2".to_string()),
+            model_dir: std::env::var("MODEL_DIR")
+                .unwrap_or_else(|_| "assets/robert-tiny2".to_string()),
             image_cache_dir: std::env::var("IMAGE_CACHE_DIR")
                 .unwrap_or_else(|_| ".image_cache".to_string()),
             connect_timeout_secs: 5,

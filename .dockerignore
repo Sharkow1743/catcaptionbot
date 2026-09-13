@@ -1,0 +1,42 @@
+# Git & VCS
+.git
+.gitignore
+.gitattributes
+
+# Build artifacts
+target/
+**/*.rs.bk
+
+# Assets & large external data (mounted at runtime)
+.image_cache/
+app_database/
+robert-tiny2/
+words/
+old/
+helper_scripts/
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs & temp
+*.log
+tmp/
+temp/
+
+# Docker itself
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# Misc
+README.md
+**/.DS_Store
