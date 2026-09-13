@@ -19,6 +19,50 @@ const BLUE_CAT_STATIC_BYTES: &[u8] = include_bytes!("../../../assets/images/blue
 // =========================================================================
 //  PROCEDURAL IMAGE FILTERS
 // =========================================================================
+//
+#[derive(Debug, Clone)]
+struct StrangeSurrealFilter;
+
+impl ImageFilter for StrangeSurrealFilter {
+    fn filter_bounds(&self, src: &Rect) -> Rect {
+        *src
+    }
+
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        let copy = pixels.to_vec();
+        for y in 0..height {
+            let yf = y as f32;
+            let wave_x = ((yf * 0.06).sin() * 6.0) as i32;
+            let wave_y = ((yf * 0.04).cos() * 3.0) as i32;
+            let target_y = ((y as i32 + wave_y).clamp(0, height as i32 - 1)) as usize;
+            let row_offset = y * width * 4;
+            let src_row = target_y * width * 4;
+
+            for x in 0..width {
+                let xf = x as f32;
+                let idx = row_offset + x * 4;
+                let src_x = ((x as i32 + wave_x).clamp(0, width as i32 - 1)) as usize;
+                let src_idx = src_row + src_x * 4;
+
+                let r_in = copy[src_idx] as f32;
+                let g_in = copy[src_idx + 1] as f32;
+                let b_in = copy[src_idx + 2] as f32;
+
+                // Surreal dream-like color twist with chromatic ripple
+                let ripple = ((xf * 0.04 - yf * 0.04).sin() * 0.5 + 0.5) * 35.0;
+                let lum = (0.299 * r_in + 0.587 * g_in + 0.114 * b_in) / 255.0;
+
+                let r = ((255.0 - b_in) * 0.35 + r_in * 0.75 + ripple).clamp(0.0, 255.0);
+                let g = (g_in * 1.15 + lum * 35.0 + ripple * 0.5).clamp(0.0, 255.0);
+                let b = ((255.0 - r_in) * 0.40 + b_in * 0.80 + ripple * 1.2).clamp(0.0, 255.0);
+
+                pixels[idx] = r as u8;
+                pixels[idx + 1] = g as u8;
+                pixels[idx + 2] = b as u8;
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct StaticAssetFilter {
@@ -1166,7 +1210,7 @@ impl Rarity for TrashRarity {
         -1.00
     }
     fn weight(&self) -> f32 {
-        105.0
+        110.0
     }
     fn rarity_color(&self) -> Color {
         Color::from_argb(255, 139, 69, 19)
@@ -1205,7 +1249,7 @@ impl Rarity for CommonRarity {
         -0.75
     }
     fn weight(&self) -> f32 {
-        170.0
+        350.0
     }
     fn rarity_color(&self) -> Color {
         Color::WHITE
@@ -1236,7 +1280,7 @@ impl Rarity for StrayRarity {
         -0.40
     }
     fn weight(&self) -> f32 {
-        110.0
+        220.0
     }
     fn rarity_color(&self) -> Color {
         Color::from_argb(255, 50, 205, 50)
@@ -1271,7 +1315,7 @@ impl Rarity for DecentRarity {
         -0.10
     }
     fn weight(&self) -> f32 {
-        75.0
+        150.0
     }
     fn rarity_color(&self) -> Color {
         Color::from_argb(255, 144, 238, 144)
@@ -1290,6 +1334,48 @@ impl Rarity for DecentRarity {
 register_rarity!(DecentRarity);
 
 #[derive(Debug)]
+pub struct StrangeRarity;
+
+impl Rarity for StrangeRarity {
+    fn id(&self) -> String {
+        "strange".to_string()
+    }
+    fn name(&self) -> String {
+        "Странный".to_string()
+    }
+    fn domain_id(&self) -> &'static str {
+        "neutral"
+    }
+    fn tier(&self) -> f32 {
+        0.00
+    }
+    fn is_secret(&self) -> bool {
+        true
+    }
+    fn weight(&self) -> f32 {
+        100.0
+    }
+    fn rarity_color(&self) -> Color {
+        Color::from_argb(255, 175, 130, 245)
+    }
+    fn text_color(&self) -> Color {
+        Color::from_argb(255, 215, 185, 255)
+    }
+    fn template(&self) -> Vec<WordSpec> {
+        build_themed_template(
+            "странный причудливый непонятный смутный сюрреалистичный искаженный чудной",
+            "парадокс мираж феномен силуэт сон знак отзвук иллюзия",
+            "казаться мерцать мерещиться путать звать исчезать ускользать",
+            0.12,
+        )
+    }
+    fn filter(&self) -> Option<ImageFilterRef> {
+        Some(Arc::new(StrangeSurrealFilter))
+    }
+}
+register_rarity!(StrangeRarity);
+
+#[derive(Debug)]
 pub struct MonochromeRarity;
 
 impl Rarity for MonochromeRarity {
@@ -1306,7 +1392,7 @@ impl Rarity for MonochromeRarity {
         0.05
     }
     fn weight(&self) -> f32 {
-        40.0
+        80.0
     }
     fn rarity_color(&self) -> Color {
         Color::from_argb(255, 211, 211, 211)
@@ -1388,7 +1474,7 @@ impl Rarity for RetroRarity {
         0.10
     }
     fn weight(&self) -> f32 {
-        32.0
+        65.0
     }
     fn rarity_color(&self) -> Color {
         Color::from_argb(255, 255, 175, 40)
@@ -1427,7 +1513,7 @@ impl Rarity for ThermalRarity {
         0.35
     }
     fn weight(&self) -> f32 {
-        22.0
+        44.0
     }
     fn rarity_color(&self) -> Color {
         Color::from_argb(255, 57, 255, 20)
@@ -1466,7 +1552,7 @@ impl Rarity for MatrixRarity {
         0.60
     }
     fn weight(&self) -> f32 {
-        14.0
+        18.0
     }
     fn rarity_color(&self) -> Color {
         Color::from_argb(255, 0, 255, 100)
@@ -1548,7 +1634,7 @@ impl Rarity for CrookedRarity {
         0.15
     }
     fn weight(&self) -> f32 {
-        28.0
+        58.0
     }
     fn rarity_color(&self) -> Color {
         Color::from_argb(255, 173, 255, 47)
@@ -1587,7 +1673,7 @@ impl Rarity for AbyssalRarity {
         0.25
     }
     fn weight(&self) -> f32 {
-        26.0
+        52.0
     }
     fn rarity_color(&self) -> Color {
         Color::from_argb(255, 0, 220, 220)
@@ -1626,7 +1712,7 @@ impl Rarity for GlacialRarity {
         0.40
     }
     fn weight(&self) -> f32 {
-        20.0
+        40.0
     }
     fn rarity_color(&self) -> Color {
         Color::from_argb(255, 130, 220, 255)
@@ -1665,7 +1751,7 @@ impl Rarity for ToxicRarity {
         0.55
     }
     fn weight(&self) -> f32 {
-        15.0
+        22.0
     }
     fn rarity_color(&self) -> Color {
         Color::from_argb(255, 57, 255, 20)
@@ -1704,7 +1790,7 @@ impl Rarity for ExplosiveRarity {
         0.70
     }
     fn weight(&self) -> f32 {
-        8.0
+        9.0
     }
     fn rarity_color(&self) -> Color {
         Color::from_argb(255, 255, 80, 0)
@@ -1786,7 +1872,7 @@ impl Rarity for DrivenRarity {
         0.20
     }
     fn weight(&self) -> f32 {
-        28.0
+        80.0
     }
     fn rarity_color(&self) -> Color {
         Color::from_argb(255, 176, 196, 222)
@@ -1825,7 +1911,7 @@ impl Rarity for RareRarity {
         0.35
     }
     fn weight(&self) -> f32 {
-        24.0
+        60.0
     }
     fn rarity_color(&self) -> Color {
         Color::from_argb(255, 30, 144, 255)
@@ -1940,7 +2026,7 @@ impl Rarity for BingeRarity {
         0.12
     }
     fn weight(&self) -> f32 {
-        28.0
+        110.0
     }
     fn rarity_color(&self) -> Color {
         Color::from_argb(255, 218, 165, 32)
@@ -1979,7 +2065,7 @@ impl Rarity for InfernalRarity {
         0.30
     }
     fn weight(&self) -> f32 {
-        24.0
+        80.0
     }
     fn rarity_color(&self) -> Color {
         Color::from_argb(255, 255, 69, 0)
@@ -2018,7 +2104,7 @@ impl Rarity for IrrationalRarity {
         0.50
     }
     fn weight(&self) -> f32 {
-        16.0
+        28.0
     }
     fn rarity_color(&self) -> Color {
         Color::from_argb(255, 255, 105, 180)
@@ -2057,7 +2143,7 @@ impl Rarity for BloodMoonRarity {
         0.60
     }
     fn weight(&self) -> f32 {
-        12.0
+        16.0
     }
     fn rarity_color(&self) -> Color {
         Color::from_argb(255, 220, 20, 60)

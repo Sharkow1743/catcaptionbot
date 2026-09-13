@@ -152,8 +152,8 @@ impl RarityManager {
                 weights_map
                     .get(&r.id())
                     .copied()
-                    .unwrap_or(r.weight())
-                    .max(0.0001)
+                    .unwrap_or_else(|| r.weight())
+                    .max(0.0)
             })
             .collect();
 

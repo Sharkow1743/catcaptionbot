@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::content::domain::DomainManager;
 use crate::content::loyalty::Loyality;
 use crate::content::modifier::{HookArg, Modifier};
 use crate::content::rarity::RarityManager;
@@ -39,30 +38,38 @@ impl Modifier for Loyalty {
         session: &crate::session::UserSession,
         hook: HookArg<'a>,
     ) -> HookArg<'a> {
-        let Some(active_slot) = session.inventory.get_ref("equip", 0) else {
-            return hook;
+        let active_slot = session.inventory.get_ref("equip", 0);
+        let is_unequipped = active_slot.is_none();
+
+        let (loyalty_level, equipped_tier, equipped_domain) = if let Some(slot) = active_slot {
+            (
+                slot.cat.loyalty_level(),
+                slot.cat.rarity().tier(),
+                Some(slot.cat.domain()),
+            )
+        } else {
+            (0.0, -0.50, None)
         };
 
-        let loyalty_level = active_slot.cat.loyalty_level();
-        let equipped_tier = active_slot.cat.rarity().tier();
-        let equipped_domain_id = active_slot.cat.domain_id();
-        let domain_mgr = DomainManager::global();
-        let equipped_domain = domain_mgr.get_by_id(equipped_domain_id);
         let rarity_mgr = RarityManager::global();
-
-        let equipped_domain_weights = equipped_domain.clone();
-        let equipped_domain_catch = equipped_domain;
+        let equipped_domain_catch = equipped_domain.clone();
 
         hook.on::<HashMap<String, f32>>("rarity_weights", move |mut weights| {
             for (id, weight) in weights.iter_mut() {
                 if let Some(rarity) = rarity_mgr.get_by_id(id) {
-                    let base_mult =
-                        Loyality::base_tier_multiplier(loyalty_level, rarity.tier(), equipped_tier);
-                    let domain_mult = if let Some(ref domain) = equipped_domain_weights {
-                        domain.weight_multiplier(rarity.domain_id(), loyalty_level, equipped_tier)
+                    let (effective_cap, domain_mult) = if let Some(ref domain) = equipped_domain {
+                        domain.domain_eval(rarity.domain_id(), loyalty_level, equipped_tier)
                     } else {
-                        1.0
+                        (crate::content::loyalty::BASE_UNEQUIPPED_CAP, 1.0)
                     };
+
+                    let base_mult = Loyality::base_tier_multiplier(
+                        loyalty_level,
+                        rarity.tier(),
+                        effective_cap,
+                        is_unequipped,
+                    );
+
                     *weight *= base_mult * domain_mult;
                 }
             }
@@ -95,7 +102,6 @@ impl Modifier for Loyalty {
     fn on_trigger(&mut self, name: &str, session: &mut crate::session::UserSession) {
         let now = unix_timestamp();
 
-        // Extract last_content info before borrowing session mutably
         let (target_dom, target_tier) = session
             .last_content
             .as_ref()

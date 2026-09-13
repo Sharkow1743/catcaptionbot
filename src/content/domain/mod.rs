@@ -55,28 +55,88 @@ pub trait Domain: Send + Sync + Debug {
         0.0
     }
 
+    fn domain_reach_bonus(&self, target_domain: &str, loyalty: f32) -> f32 {
+        if self.id() == "neutral" {
+            return 0.05;
+        }
+
+        let pos_loyalty = loyalty.clamp(-1.0, 1.0).max(0.0);
+
+        if self.primary_resonance() == Some(target_domain) {
+            0.35 + 0.20 * pos_loyalty
+        } else if self.id() == target_domain {
+            // Own domain gets NO reach bonus (0.0). Players must use resonant domain to climb.
+            0.0
+        } else if self.primary_opposing() == Some(target_domain) {
+            -0.25
+        } else if self.secondary_opposing() == Some(target_domain) {
+            -0.15
+        } else if target_domain == "neutral" {
+            0.05
+        } else {
+            0.05
+        }
+    }
+
     fn weight_multiplier(&self, target_domain: &str, loyalty: f32, _equipped_tier: f32) -> f32 {
         if self.id() == "neutral" {
-            return 1.0;
+            let pos_loyalty = loyalty.clamp(-1.0, 1.0).max(0.0);
+            return (1.0 - 0.20 * pos_loyalty).max(0.80);
         }
 
         let l = loyalty.clamp(-1.0, 1.0);
         let pos_loyalty = l.max(0.0);
 
         if target_domain == "neutral" {
-            return (1.0 - 0.25 * pos_loyalty).max(0.75);
+            return (1.0 - 0.35 * pos_loyalty).max(0.65);
         }
 
         if self.primary_resonance() == Some(target_domain) {
-            1.0 + 0.70 * pos_loyalty
+            1.0 + 0.50 * pos_loyalty
         } else if self.id() == target_domain {
-            1.0 + 0.30 * pos_loyalty
+            // Own domain is not attracted; slightly diluted to encourage domain rotation
+            (1.0 - 0.10 * pos_loyalty).max(0.90)
         } else if self.primary_opposing() == Some(target_domain) {
-            (1.0 - 0.50 * pos_loyalty).max(0.15)
+            (1.0 - 0.55 * pos_loyalty).max(0.20)
         } else if self.secondary_opposing() == Some(target_domain) {
-            (1.0 - 0.25 * pos_loyalty).max(0.25)
+            (1.0 - 0.35 * pos_loyalty).max(0.35)
         } else {
             1.0
+        }
+    }
+
+    fn domain_eval(&self, target_domain: &str, loyalty: f32, equipped_tier: f32) -> (f32, f32) {
+        let pos_loyalty = loyalty.clamp(-1.0, 1.0).max(0.0);
+
+        if self.id() == "neutral" {
+            let cap = (equipped_tier + 0.20 + 0.10 * pos_loyalty).max(0.35);
+            let mult = (1.0 - 0.20 * pos_loyalty).max(0.80);
+            return (cap, mult);
+        }
+
+        if target_domain == "neutral" {
+            return (0.10, (1.0 - 0.40 * pos_loyalty).max(0.50));
+        }
+
+        if self.primary_resonance() == Some(target_domain) {
+            // Resonance: The only domain that unlocks higher tiers & heavy boost
+            let cap = equipped_tier + 0.35 + 0.25 * pos_loyalty;
+            let mult = 1.0 + 0.75 * pos_loyalty;
+            (cap, mult)
+        } else if self.id() == target_domain {
+            // Own domain: Cannot climb self; forces swapping
+            let cap = (equipped_tier - 0.05).max(0.20);
+            let mult = (1.0 - 0.20 * pos_loyalty).max(0.70);
+            (cap, mult)
+        } else if self.primary_opposing() == Some(target_domain) {
+            // Primary opposing: Heavily restricted
+            (0.15, (1.0 - 0.65 * pos_loyalty).max(0.15))
+        } else if self.secondary_opposing() == Some(target_domain) {
+            // Secondary opposing: Restricted
+            (0.25, (1.0 - 0.45 * pos_loyalty).max(0.30))
+        } else {
+            // Unrelated: Baseline starter cap
+            (0.35, 1.0)
         }
     }
 }
