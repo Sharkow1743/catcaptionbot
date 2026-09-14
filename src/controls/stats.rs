@@ -41,39 +41,29 @@ pub fn format_rarity_chance(pct: f32) -> String {
         format!("{:.1}%", pct)
     } else if pct >= 0.01 {
         format!("{:.2}%", pct)
-    } else if pct >= 0.001 {
+    } else if pct >= 0.0005 {
+        // Numbers from 0.0005 up to 0.01 round to 3 decimal places
         format!("{:.3}%", pct)
-    } else if pct >= 0.0001 {
-        format!("{:.4}%", pct)
     } else {
-        "<0.0001%".to_string()
+        "0.001%".to_string()
     }
 }
 
 pub fn format_one_in_n(pct: f32) -> String {
     if pct <= 0.0 || !pct.is_finite() {
-        "—".to_string()
+        return "—".to_string();
+    }
+
+    let n = (100.0 / pct as f64).round().max(1.0);
+
+    if n >= 999_500_000.0 {
+        format!("1:{}B", (n / 1_000_000_000.0).round() as u64)
+    } else if n >= 999_500.0 {
+        format!("1:{}M", (n / 1_000_000.0).round() as u64)
+    } else if n >= 999.5 {
+        format!("1:{}K", (n / 1_000.0).round() as u64)
     } else {
-        let one_in_n = (100.0 / pct).round();
-        if one_in_n >= 1_000_000_000.0 {
-            let b = one_in_n / 1_000_000_000.0;
-            if b >= 10.0 || (b * 10.0).round() % 10.0 == 0.0 {
-                format!("1:{:.0}B", b.round())
-            } else {
-                format!("1:{:.1}B", b)
-            }
-        } else if one_in_n >= 1_000_000.0 {
-            let m = one_in_n / 1_000_000.0;
-            if m >= 10.0 || (m * 10.0).round() % 10.0 == 0.0 {
-                format!("1:{:.0}M", m.round())
-            } else {
-                format!("1:{:.1}M", m)
-            }
-        } else if one_in_n >= 10_000.0 {
-            format!("1:{:.0}k", (one_in_n / 1000.0).round())
-        } else {
-            format!("1:{}", (one_in_n as u64).max(1))
-        }
+        format!("1:{}", n as u64)
     }
 }
 
@@ -230,9 +220,9 @@ pub fn build_rich_stats_message(session: &UserSession) -> InputRichMessage {
 
     let mut rarity_rows: Vec<Vec<RichBlockTableCell>> = vec![vec![
         table_cell(bold("Редкость"), true, "left"),
-        table_cell(bold("Текущий шанс"), true, "center"),
-        table_cell("", true, "right"),
-        table_cell(bold("Множитель"), true, "right"),
+        table_cell(bold("Текущий"), true, "right"),
+        table_cell(bold("шанс"), true, "left"),
+        table_cell(bold("Множ."), true, "center"),
     ]];
 
     for r in visible_rarities {
