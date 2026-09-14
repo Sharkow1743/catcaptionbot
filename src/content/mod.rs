@@ -67,7 +67,7 @@ pub async fn content_queue(
         |image_bytes, ctx| async move {
             let preprocess_time = Instant::now();
             let _permit = ctx.limiter.acquire_background().await;
-            let image = run_cpu(move || preprocess_image(&image_bytes)).await?;
+            let image = run_cpu(move || preprocess_image(&image_bytes)).await??;
             stats!("Preprocessed image in {:?}", preprocess_time.elapsed());
             anyhow::Ok(image)
         },
@@ -105,7 +105,7 @@ async fn process_content(
         let session = session.clone();
 
         let _permit = ctx.limiter.acquire_foreground().await;
-        run_cpu(move || process_image(rarity.as_ref(), image, text, modifiers, session)).await?
+        run_cpu(move || process_image(rarity.as_ref(), image, text, modifiers, session)).await??
     };
     let image_time = image_time.elapsed();
 

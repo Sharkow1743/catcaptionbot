@@ -23,18 +23,34 @@ pub fn cpu_pool() -> &'static rayon::ThreadPool {
 }
 
 /// Offloads a synchronous CPU-bound task (e.g., image rendering/decoding) to the Rayon pool.
-pub async fn run_cpu<F, R>(f: F) -> R
+/// Panics inside `f` are caught and converted into an error so the Tokio caller never hangs
+/// waiting for a oneshot that will never fire.
+pub async fn run_cpu<F, R>(f: F) -> Result<R, anyhow::Error>
 where
     F: FnOnce() -> R + Send + 'static,
     R: Send + 'static,
 {
     let (tx, rx) = oneshot::channel();
     cpu_pool().spawn(move || {
-        let res = f();
-        let _ = tx.send(res);
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        let payload = match res {
+            Ok(value) => Ok(value),
+            Err(panic_payload) => {
+                let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                log::error!("CPU worker panicked: {msg}");
+                Err(anyhow::anyhow!("CPU worker panicked: {msg}"))
+            }
+        };
+        let _ = tx.send(payload);
     });
     rx.await
-        .expect("CPU worker thread panicked or dropped channel")
+        .map_err(|_| anyhow::anyhow!("CPU worker channel dropped"))?
 }
 
 /// Dynamic compute semaphore that prioritizes foreground/interactive work
