@@ -137,12 +137,6 @@ impl Modifier for Loyalty {
 
             self.has_equipped = true;
             self.level = equipped_slot.cat.loyalty_level();
-            notice!(
-                "Loyalty companion ({}): {:+.2} [{}]",
-                equipped_slot.cat.image_text(),
-                self.level,
-                name
-            );
         } else {
             self.has_equipped = false;
             self.level = 0.0;

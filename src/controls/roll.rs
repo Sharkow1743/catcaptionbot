@@ -72,7 +72,6 @@ async fn do_cat_roll(
     let now = unix_timestamp();
     let latest_roll = *session.rolls.get_latest().unwrap_or(&now);
     let between_rolls = now - latest_roll;
-    notice!("Time between rolls: {between_rolls}ms");
     session.between_rolls.push(between_rolls);
 
     session.fire_trigger("on_roll");

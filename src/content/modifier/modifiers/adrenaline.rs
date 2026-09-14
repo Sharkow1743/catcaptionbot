@@ -332,16 +332,12 @@ impl Modifier for Adrenaline {
                 if self.level < 0.01 {
                     self.level = 0.0;
                 }
-
-                notice!("Adrenaline updated to {:.2}", self.level);
             }
             "on_cat_catch" => {
                 self.level = (self.level * 0.50).max(0.0);
-                notice!("Adrenaline reduced to {:.2}", self.level);
             }
             "on_cat_escape" => {
                 self.level *= 1.3;
-                notice!("Adrenaline maintained at {:.2}", self.level);
             }
             _ => {}
         }
