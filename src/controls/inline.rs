@@ -1,10 +1,174 @@
-use teloxide::prelude::*;
-use teloxide::types::CallbackQuery;
+use std::str::FromStr;
 
+use teloxide::prelude::*;
+use teloxide::types::{
+    CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InlineQuery, InlineQueryResult,
+    InlineQueryResultArticle, InlineQueryResultCachedPhoto, InputMessageContent,
+    InputMessageContentText, ParseMode,
+};
+use teloxide::utils::html::escape;
+
+use crate::content::domain::DomainManager;
+use crate::content::rarity::RarityManager;
 use crate::controls::inventory::handle_inventory_callback;
 use crate::controls::take::handle_take_cat;
 use crate::session::UserSession;
 use crate::state::{AppState, DialogueState, HandlerResult};
+use crate::utils::short_id::ShortId;
+
+pub async fn handle_inline_query(bot: Bot, q: InlineQuery, app_state: AppState) -> HandlerResult {
+    let user_id = q.from.id.0;
+    let query = q.query.trim().to_lowercase();
+    let session = app_state
+        .session_manager
+        .get_session(user_id)
+        .await
+        .unwrap_or_else(|_| UserSession::new(user_id));
+
+    let raw_username = q.from.username.as_deref().unwrap_or("Игрок");
+    let safe_username = escape(raw_username);
+
+    let mut results: Vec<InlineQueryResult> = Vec::new();
+
+    // ── 1. DUEL CHALLENGE ──
+    if query.is_empty()
+        || query.contains("battle")
+        || query.contains("duel")
+        || query.contains("дуэль")
+        || query.contains("бой")
+    {
+        let duel_id = ShortId::now_v7();
+        let content = InputMessageContentText::new(format!(
+            "<b>Вызов на дуель</b>\n\n<b>Организатор:</b> @{safe_username}"
+        ))
+        .parse_mode(ParseMode::Html);
+
+        let kb = InlineKeyboardMarkup::new([[InlineKeyboardButton::callback(
+            "Принять вызов",
+            format!("inline_duel:{duel_id}:{user_id}"),
+        )]]);
+
+        let article = InlineQueryResultArticle::new(
+            format!("duel_{duel_id}"),
+            "Позвать на дуэль",
+            InputMessageContent::Text(content),
+        )
+        .description("Отправить приглашение на дуэль в этот чат")
+        .reply_markup(kb);
+
+        results.push(InlineQueryResult::Article(article));
+    }
+
+    // ── 2. PLAYER STATISTICS ──
+    if query.is_empty()
+        || query.contains("stat")
+        || query.contains("стат")
+        || query.contains("профиль")
+        || query.contains("profile")
+    {
+        let total_duels =
+            session.stats.battles_won + session.stats.battles_lost + session.stats.battles_draw;
+        let win_ratio = if total_duels > 0 {
+            (session.stats.battles_won as f32 / total_duels as f32) * 100.0
+        } else {
+            0.0
+        };
+
+        let best_rarity = session.stats.best_rarity_name.as_deref().unwrap_or("—");
+
+        let stats_text = format!(
+            "<b>Статистика @{}</b>\n\n<b>Коты:</b>\n• Поймано: <b>{}</b>\n• Отпущено: <b>{}</b>\n• Увидено: <b>{}</b>\n• Рекордная редкость: <b>{}</b>\n\n<b>Дуэли:</b>\n• Побед: <b>{}</b>\n• Поражений: <b>{}</b>\n• Ничьих: <b>{}</b>\n• Всего: {}\n• Процент побед: <b>{:.1}%</b>",
+            safe_username,
+            session.stats.total_caught,
+            session.stats.total_released,
+            session.stats.total_rolls,
+            escape(best_rarity),
+            session.stats.battles_won,
+            session.stats.battles_lost,
+            session.stats.battles_draw,
+            total_duels,
+            win_ratio
+        );
+
+        let content = InputMessageContentText::new(stats_text).parse_mode(ParseMode::Html);
+        let article = InlineQueryResultArticle::new(
+            format!("stats_{user_id}"),
+            "Поделиться статистикой",
+            InputMessageContent::Text(content),
+        )
+        .description("Отправить общую статистику и сражений");
+
+        results.push(InlineQueryResult::Article(article));
+    }
+
+    if let Err(e) = bot
+        .answer_inline_query(q.id, results)
+        .is_personal(true)
+        .cache_time(0)
+        .await
+    {
+        log::error!("Failed to answer inline query: {e:?}");
+    }
+
+    Ok(())
+}
+
+pub async fn handle_inline_duel_callback(
+    bot: Bot,
+    q: CallbackQuery,
+    app_state: AppState,
+) -> HandlerResult {
+    let Some(ref data) = q.data else {
+        return Ok(());
+    };
+
+    let Some(duel_data) = data.strip_prefix("inline_duel:") else {
+        return Ok(());
+    };
+
+    let parts: Vec<&str> = duel_data.split(':').collect();
+    if parts.len() >= 2 {
+        let battle_id = ShortId::from_str(parts[0]).unwrap_or_else(|_| ShortId::now_v7());
+        let host_id: u64 = parts[1].parse().unwrap_or(0);
+        let challenger_id = q.from.id.0;
+        let challenger_username = q.from.username.clone();
+
+        if challenger_id == host_id {
+            let _ = bot
+                .answer_callback_query(q.id)
+                .text("Вы не можете принять собственный вызов")
+                .show_alert(true)
+                .await;
+            return Ok(());
+        }
+
+        let _ = bot
+            .answer_callback_query(q.id)
+            .text("Дуэль принята! Переходим к бою...")
+            .await;
+
+        let _ = crate::content::battle::create_invite_duel_with_id(
+            &app_state.session_manager,
+            host_id,
+            0,
+            None,
+            battle_id,
+        )
+        .await;
+
+        let _ = crate::content::battle::join_invite_duel(
+            &app_state.session_manager,
+            &bot,
+            challenger_id,
+            0,
+            challenger_username,
+            battle_id,
+        )
+        .await;
+    }
+
+    Ok(())
+}
 
 pub async fn handle_inline_callback(
     bot: Bot,
@@ -18,7 +182,6 @@ pub async fn handle_inline_callback(
     };
 
     let Some(message) = q.message.clone() else {
-        log::warn!("Received callback query without message context");
         let _ = bot.answer_callback_query(q.id).await;
         return Ok(());
     };
@@ -35,7 +198,6 @@ pub async fn handle_inline_callback(
             .await?;
     } else {
         let _ = bot.answer_callback_query(q.id).await;
-        log::warn!("Unhandled callback query data: {data}");
     }
 
     Ok(())

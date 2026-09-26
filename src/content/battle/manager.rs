@@ -836,3 +836,29 @@ pub async fn is_in_queue_or_waiting(session_mgr: &SessionManager, user_id: u64) 
     }
     find_waiting_duel(session_mgr, user_id).await.is_some()
 }
+
+pub async fn create_invite_duel_with_id(
+    session_mgr: &SessionManager,
+    user_id: u64,
+    chat_id: i64,
+    username: Option<String>,
+    battle_id: ShortId,
+) -> anyhow::Result<ShortId> {
+    cancel_waiting(session_mgr, user_id).await;
+
+    let now = unix_timestamp();
+    let battle_session = BattleSession {
+        id: battle_id,
+        mode: BattleMode::random(),
+        status: BattleStatus::WaitingForOpponent,
+        created_at_ms: now,
+        player_a: PlayerBattleState::new(user_id, chat_id, username),
+        player_b: None,
+    };
+
+    session_mgr
+        .set_ephemeral(battle_id, battle_session, [user_id])
+        .await;
+
+    Ok(battle_id)
+}

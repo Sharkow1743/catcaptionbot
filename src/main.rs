@@ -97,30 +97,45 @@ async fn main() -> anyhow::Result<()> {
 
     let content_queue = content_queue(app_state.clone()).await;
 
-    let handler = dialogue::enter::<Update, InMemStorage<State>, State, _>()
-        .filter_map(|update: Update| update.from().map(|u| u.id))
-        .filter_map_async(|user_id: UserId, app_state: AppState| async move {
-            app_state.session_manager.get_session(user_id.0).await.ok()
-        })
+    let handler = dptree::entry()
         .branch(
-            Update::filter_message()
-                .filter_command::<Command>()
-                .branch(dptree::case![Command::Start(string)].endpoint(handle_start))
-                .branch(dptree::case![Command::Help].endpoint(handle_help)),
+            Update::filter_inline_query().endpoint(crate::controls::inline::handle_inline_query),
         )
         .branch(
-            dptree::case![State::Start]
-                .branch(Update::filter_kb_callback().endpoint(handle_keyboard_callback)),
+            Update::filter_callback_query()
+                .filter(|q: CallbackQuery| {
+                    q.data
+                        .as_deref()
+                        .map_or(false, |d| d.starts_with("inline_duel:"))
+                })
+                .endpoint(crate::controls::inline::handle_inline_duel_callback),
         )
         .branch(
-            dptree::case![State::Inventory(view)]
-                .branch(Update::filter_message().endpoint(handle_inventory_message)),
-        )
-        .branch(Update::filter_callback_query().endpoint(handle_inline_callback))
-        .branch(
-            Update::filter_message()
-                .map(|| "".to_string())
-                .endpoint(handle_start),
+            dialogue::enter::<Update, InMemStorage<State>, State, _>()
+                .filter_map(|update: Update| update.from().map(|u| u.id))
+                .filter_map_async(|user_id: UserId, app_state: AppState| async move {
+                    app_state.session_manager.get_session(user_id.0).await.ok()
+                })
+                .branch(
+                    Update::filter_message()
+                        .filter_command::<Command>()
+                        .branch(dptree::case![Command::Start(string)].endpoint(handle_start))
+                        .branch(dptree::case![Command::Help].endpoint(handle_help)),
+                )
+                .branch(
+                    dptree::case![State::Start]
+                        .branch(Update::filter_kb_callback().endpoint(handle_keyboard_callback)),
+                )
+                .branch(
+                    dptree::case![State::Inventory(view)]
+                        .branch(Update::filter_message().endpoint(handle_inventory_message)),
+                )
+                .branch(Update::filter_callback_query().endpoint(handle_inline_callback))
+                .branch(
+                    Update::filter_message()
+                        .map(|| "".to_string())
+                        .endpoint(handle_start),
+                ),
         );
 
     let dispatcher = Dispatcher::builder(bot, handler).dependencies(deps![
