@@ -7,7 +7,7 @@ use super::default_selection;
 use crate::controls::inventory::renderer::{
     build_rich_inventory_message, render_card_content, render_controls_in_place,
 };
-use crate::controls::inventory::types::InventoryView;
+use crate::controls::inventory::types::{InventoryTab, InventoryView};
 use crate::controls::inventory_menu_keyboard;
 use crate::session::UserSession;
 use crate::state::{AppState, DialogueState, HandlerResult, State};
@@ -80,7 +80,7 @@ pub async fn display_inventory(
     }
 
     // 2. Send Message 2: Rich Message grid
-    let rich_msg = build_rich_inventory_message(&session, selected, None);
+    let rich_msg = build_rich_inventory_message(&session, selected, InventoryTab::Overview, None);
     let ctrl_msg = bot.send_rich_message(chat_id, rich_msg).await?;
 
     let view = InventoryView::new(card_msg.id, ctrl_msg.id, selected);
@@ -175,6 +175,7 @@ fn spawn_inventory_updater(
                 current_view.ctrl_msg_id,
                 &session,
                 current_view.selected,
+                current_view.tab,
                 current_view.pending_release,
             )
             .await

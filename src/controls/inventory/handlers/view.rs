@@ -31,6 +31,7 @@ pub(super) async fn apply_inventory_view(
             view.ctrl_msg_id,
             session,
             view.selected,
+            view.tab,
             view.pending_release,
         )
     );

@@ -1,6 +1,7 @@
+use serde::{Deserialize, Serialize};
 use teloxide::types::MessageId;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InventorySlot {
     Equip,
     Bag(usize),
@@ -16,11 +17,19 @@ impl InventorySlot {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum InventoryTab {
+    #[default]
+    Overview,
+    Stats,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InventoryView {
     pub card_msg_id: MessageId,
     pub ctrl_msg_id: MessageId,
     pub selected: InventorySlot,
+    pub tab: InventoryTab,
     /// Set while a release is awaiting confirmation. Cleared by any other action.
     pub pending_release: Option<InventorySlot>,
 }
@@ -31,6 +40,7 @@ impl InventoryView {
             card_msg_id,
             ctrl_msg_id,
             selected,
+            tab: InventoryTab::Overview,
             pending_release: None,
         }
     }
