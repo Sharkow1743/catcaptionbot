@@ -1,15 +1,24 @@
 # Git & VCS
-.git
+.git/
 .gitignore
 .gitattributes
+
+# Dev environments & local caches (Huge!)
+.devbox/
+.fastembed_cache/
+.image_cache/
+app_database/
 
 # Build artifacts
 target/
 **/*.rs.bk
 
-# Assets & large external data (mounted at runtime)
-.image_cache/
-app_database/
+# Exclude large local data / DB files from assets (if mounted at runtime)
+# If you want to exclude only large DBs inside assets, do this:
+assets/**/*.db
+# If assets are completely externalized/mounted at runtime, uncomment below & remove `COPY assets` from Dockerfile:
+# assets/
+
 robert-tiny2/
 words/
 old/
