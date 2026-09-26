@@ -48,10 +48,19 @@ async fn main() -> anyhow::Result<()> {
 
     let mut client_builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(config.connect_timeout_secs))
-        .pool_max_idle_per_host(usize::MAX);
+        .timeout(Duration::from_secs(90))
+        .pool_idle_timeout(Duration::from_secs(30))
+        .pool_max_idle_per_host(8)
+        .tcp_keepalive(Duration::from_secs(30))
+        .tcp_nodelay(true)
+        .http2_keep_alive_interval(Duration::from_secs(20))
+        .http2_keep_alive_timeout(Duration::from_secs(10));
 
     if let Some(ref proxy_url) = config.proxy_url {
+        log::info!("Using proxy: {proxy_url}");
         client_builder = client_builder.proxy(reqwest::Proxy::all(proxy_url)?);
+    } else {
+        log::info!("No proxy configured");
     }
 
     let client = client_builder.build()?;

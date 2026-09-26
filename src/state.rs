@@ -43,9 +43,12 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            // Only enable proxy when explicitly set. A forced default to
+            // socks5h://127.0.0.1:9050 is a common source of silent hangs
+            // after idle (proxy dies / connection drops, reqwest never times out).
             proxy_url: std::env::var("TELOXIDE_PROXY")
                 .ok()
-                .or_else(|| Some("socks5h://127.0.0.1:9050".to_string())),
+                .filter(|s| !s.trim().is_empty()),
             morphology_db_path: std::env::var("MORPHOLOGY_DB")
                 .unwrap_or_else(|_| "assets/text/morphology.db".to_string()),
             words_db_path: std::env::var("WORDS_DB")
@@ -55,7 +58,7 @@ impl Default for Config {
                 .unwrap_or_else(|_| "assets/robert-tiny2".to_string()),
             image_cache_dir: std::env::var("IMAGE_CACHE_DIR")
                 .unwrap_or_else(|_| ".image_cache".to_string()),
-            connect_timeout_secs: 5,
+            connect_timeout_secs: 10,
             sentences_db_path: std::env::var("SENTENCES_DB")
                 .unwrap_or_else(|_| "assets/text/sentences.db".to_string()),
         }
