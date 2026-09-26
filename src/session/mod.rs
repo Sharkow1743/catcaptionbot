@@ -1,3 +1,4 @@
+pub mod migration;
 pub mod stats;
 
 use std::any::Any;
@@ -10,6 +11,7 @@ use bonsaidb::core::schema::{Collection, Schema, SerializedCollection};
 use bonsaidb::core::transmog_pot::pot;
 use bonsaidb::local::AsyncDatabase;
 use bonsaidb::local::config::{Builder, StorageConfiguration};
+use migration::{CURRENT_PROFILE_SCHEMA_VERSION, MigrationManager};
 use moka::future::Cache;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -32,10 +34,6 @@ fn current_time_secs() -> u64 {
         .as_secs()
 }
 
-// =========================================================================
-// 2. Database Schema
-// =========================================================================
-
 #[derive(Debug, Schema)]
 #[schema(
     name = "session-database",
@@ -43,41 +41,45 @@ fn current_time_secs() -> u64 {
 )]
 pub struct SessionSchema;
 
-// -------------------------------------------------------------------------
-// Persistent Profile (Add ANY persistent user fields HERE only)
-// -------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Serialize, Deserialize, Collection)]
 #[collection(name = "user-profiles", primary_key = u64)]
 #[serde(default)]
 pub struct UserProfile {
     #[natural_id]
     pub user_id: u64,
+    pub schema_version: u32,
     pub inventory: Inventory,
     pub stats: UserStats,
+    pub shards: HashMap<String, u32>,
 }
 
 impl UserProfile {
     pub fn new(user_id: u64) -> Self {
         Self {
             user_id,
+            schema_version: CURRENT_PROFILE_SCHEMA_VERSION,
             inventory: Inventory::default()
                 .with_category("equip", 1)
                 .with_category("inventory", 3),
             stats: UserStats::default(),
+            shards: HashMap::new(),
         }
     }
 }
 
 impl Default for UserProfile {
     fn default() -> Self {
-        Self::new(0)
+        Self {
+            user_id: 0,
+            schema_version: 0, // Defaults missing database records to schema version 0
+            inventory: Inventory::default()
+                .with_category("equip", 1)
+                .with_category("inventory", 3),
+            stats: UserStats::default(),
+            shards: HashMap::new(),
+        }
     }
 }
-
-// -------------------------------------------------------------------------
-// Persistent Shared Record (Binary encoded with Pot)
-// -------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Collection)]
 #[collection(name = "shared-records", primary_key = u32)]
@@ -89,16 +91,9 @@ pub struct PersistentSharedRecord {
     pub updated_at_secs: u64,
 }
 
-// =========================================================================
-// 3. User Session
-// =========================================================================
-
 #[derive(Debug, Clone, Default)]
 pub struct UserSession {
-    /// Persistent profile fields (Deref allows direct access: session.user_id, session.inventory)
     pub profile: UserProfile,
-
-    // Ephemeral in-memory fields (Add ANY ephemeral user fields HERE only)
     pub rolls: CappedBuffer<i64>,
     pub between_rolls: CappedBuffer<i64>,
     pub last_roll_msg_id: Option<MessageId>,
@@ -191,10 +186,6 @@ impl UserSession {
     }
 }
 
-// =========================================================================
-// 4. Ephemeral Multi-User / Shared Store (Zero JSON / Pure Any Downcasting)
-// =========================================================================
-
 struct EphemeralEntry {
     data: Arc<dyn Any + Send + Sync>,
     related_users: HashSet<u64>,
@@ -209,7 +200,6 @@ pub struct EphemeralStore {
 }
 
 impl EphemeralStore {
-    /// Inserts a new ephemeral value with an auto-generated ShortId.
     pub async fn insert<T: Send + Sync + 'static>(
         &self,
         value: T,
@@ -220,7 +210,6 @@ impl EphemeralStore {
         id
     }
 
-    /// Sets or replaces an ephemeral value at the given ShortId.
     pub async fn set<T: Send + Sync + 'static>(
         &self,
         id: ShortId,
@@ -259,13 +248,11 @@ impl EphemeralStore {
         );
     }
 
-    /// Gets a cloned instance of the strongly-typed value.
     pub async fn get<T: Clone + Send + Sync + 'static>(&self, id: ShortId) -> Option<T> {
         let entries = self.entries.read().await;
         entries.get(&id)?.data.downcast_ref::<T>().cloned()
     }
 
-    /// Mutates the strongly-typed value in-place.
     pub async fn mutate<T: Clone + Send + Sync + 'static, R>(
         &self,
         id: ShortId,
@@ -281,7 +268,6 @@ impl EphemeralStore {
         Some(res)
     }
 
-    /// Removes an ephemeral entry.
     pub async fn remove(&self, id: ShortId) -> bool {
         let mut entries = self.entries.write().await;
         let removed = match entries.remove(&id) {
@@ -302,7 +288,6 @@ impl EphemeralStore {
         true
     }
 
-    /// Finds all ShortIds linked to a user.
     pub async fn find_by_user(&self, user_id: u64) -> Vec<ShortId> {
         let user_index = self.user_index.read().await;
         user_index
@@ -311,7 +296,6 @@ impl EphemeralStore {
             .unwrap_or_default()
     }
 
-    /// Finds all entries of a specific type linked to a user.
     pub async fn find_by_user_typed<T: Clone + Send + Sync + 'static>(
         &self,
         user_id: u64,
@@ -373,10 +357,6 @@ impl EphemeralStore {
     }
 }
 
-// =========================================================================
-// 5. Session & Data Manager
-// =========================================================================
-
 #[derive(Clone)]
 pub struct SessionManager {
     db: AsyncDatabase,
@@ -413,7 +393,6 @@ impl SessionManager {
         let flush_notify = Arc::new(Notify::new());
         let ephemeral_store = Arc::new(EphemeralStore::default());
 
-        // Background debounced disk flusher
         {
             let db = db.clone();
             let pending_profile_writes = pending_profile_writes.clone();
@@ -448,10 +427,6 @@ impl SessionManager {
         &self.striped_locks[(user_id as usize) % LOCK_STRIPES]
     }
 
-    // ---------------------------------------------------------------------
-    // User Session Methods
-    // ---------------------------------------------------------------------
-
     pub async fn get_session(&self, user_id: u64) -> anyhow::Result<UserSession> {
         if let Some(session) = self.cache.get(&user_id).await {
             return Ok((*session).clone());
@@ -461,7 +436,16 @@ impl SessionManager {
             Ok(Some(doc)) => {
                 let mut profile = doc.contents;
                 profile.user_id = user_id;
-                UserSession::from_profile(profile)
+
+                let migration_mgr = MigrationManager::new();
+                let was_migrated = migration_mgr.migrate(&mut profile);
+
+                let session = UserSession::from_profile(profile);
+                if was_migrated {
+                    let _ = self.save_session(&session).await;
+                }
+
+                session
             }
             Ok(None) => UserSession::new(user_id),
             Err(e) => {
@@ -532,11 +516,6 @@ impl SessionManager {
         Ok(())
     }
 
-    // ---------------------------------------------------------------------
-    // Ephemeral Shared Data Methods (Typed, Zero-Serialization)
-    // ---------------------------------------------------------------------
-
-    /// Auto-generates a ShortId and stores the value in memory.
     #[inline]
     pub async fn insert_ephemeral<T: Send + Sync + 'static>(
         &self,
@@ -603,11 +582,6 @@ impl SessionManager {
         self.ephemeral_store.all_typed().await
     }
 
-    // ---------------------------------------------------------------------
-    // Persistent Shared Data Methods (Compact Binary Storage)
-    // ---------------------------------------------------------------------
-
-    /// Auto-generates a ShortId and persists the value to disk.
     pub async fn insert_persistent<T: Serialize>(
         &self,
         value: &T,
@@ -738,10 +712,6 @@ impl SessionManager {
         }
         Ok(false)
     }
-
-    // ---------------------------------------------------------------------
-    // Triggers / Hooks
-    // ---------------------------------------------------------------------
 
     #[allow(dead_code)]
     pub async fn fire_trigger(&self, user_id: u64, name: &str) -> anyhow::Result<()> {
