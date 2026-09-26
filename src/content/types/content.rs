@@ -12,6 +12,25 @@ pub struct Content {
     image_text: String,
 }
 
+impl Default for Content {
+    fn default() -> Self {
+        let rarity = RarityManager::global()
+            .get_by_id("common")
+            .unwrap_or_else(|| {
+                RarityManager::global()
+                    .all()
+                    .first()
+                    .cloned()
+                    .expect("No rarities registered")
+            });
+        Self {
+            image: CachedImage::from_bytes(bytes::Bytes::new()),
+            rarity,
+            image_text: String::new(),
+        }
+    }
+}
+
 impl Content {
     pub fn new(image: CachedImage, rarity: Arc<dyn Rarity>, image_text: String) -> Self {
         Self {

@@ -1,7 +1,14 @@
 pub mod modifiers {
     pub mod adrenaline;
     pub mod loyalty;
+    pub mod lucky_spark;
+    pub mod panic;
 }
+
+pub use modifiers::adrenaline::*;
+pub use modifiers::loyalty::*;
+pub use modifiers::lucky_spark::*;
+pub use modifiers::panic::*;
 
 use crate::session::UserSession;
 use serde::de::DeserializeOwned;
@@ -11,8 +18,6 @@ use std::marker::PhantomData;
 use std::sync::{Mutex, OnceLock};
 
 pub use inventory;
-pub use modifiers::adrenaline::*;
-pub use modifiers::loyalty::*;
 
 // -----------------------------------------------------------------------------
 // HookArg Helper

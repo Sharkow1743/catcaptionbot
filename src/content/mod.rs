@@ -17,7 +17,7 @@ use image::edit::{preprocess_image, process_image};
 use image::fetch_image;
 use rarity::{Rarity, RarityManager};
 
-pub use types::{Cat, Content};
+pub use types::{Cat, CatStats, CatTrait, Content};
 
 pub mod battle;
 pub mod domain;
@@ -26,7 +26,7 @@ pub mod inventory;
 pub mod loyalty;
 pub mod modifier;
 pub mod rarity;
-mod types;
+pub mod types;
 
 async fn generate_rarity_text(
     rarity: &dyn Rarity,
