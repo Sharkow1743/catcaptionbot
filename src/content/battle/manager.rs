@@ -387,7 +387,7 @@ pub fn start_battle_lifecycle(bot: Bot, session_mgr: SessionManager, battle_id: 
         // Edit Telegram inline message if originated from inline query
         if let Some(ref inline_msg_id) = battle.inline_message_id {
             let inline_start = format!(
-                "⚔️ <b>ДУЭЛЬ НАЧАЛАСЬ</b>\n\n{p_a_label} <b>VS</b> {p_b_label}\n<b>Режим:</b> {mode_title}\n\n<i>Битва в процессе...</i>"
+                "<b>ДУЭЛЬ НАЧАЛАСЬ</b>\n\n{p_a_label} <b>VS</b> {p_b_label}\n<b>Режим:</b> {mode_title}\n\n<i>Битва в процессе...</i>"
             );
             let _ = bot
                 .edit_message_text_inline(inline_msg_id.clone(), inline_start)
@@ -845,17 +845,17 @@ pub async fn finalize_battle(
         let winner_text = match &outcome {
             BattleOutcome::Winner { winner_id, .. } => {
                 if *winner_id == p_a.user_id {
-                    format!("🏆 Победитель: <b>{p_a_label}</b>")
+                    format!("Победитель: <b>{p_a_label}</b>")
                 } else {
-                    format!("🏆 Победитель: <b>{p_b_label}</b>")
+                    format!("Победитель: <b>{p_b_label}</b>")
                 }
             }
-            BattleOutcome::Draw => "🤝 <b>Ничья!</b>".to_string(),
+            BattleOutcome::Draw => "<b>Ничья!</b>".to_string(),
             BattleOutcome::Cancelled => "❌ <b>Дуэль отменена</b>".to_string(),
         };
 
         let inline_final = format!(
-            "⚔️ <b>ДУЭЛЬ ЗАВЕРШЕНА</b>\n\n{p_a_label} <b>VS</b> {p_b_label}\n\n{winner_text}\n\n<b>Счет:</b>\n• {p_a_label}: {} бросков (лучший: {})\n• {p_b_label}: {} бросков (лучший: {})\n\n<b>Время:</b> {:.1} с",
+            "<b>ДУЭЛЬ ЗАВЕРШЕНА</b>\n\n{p_a_label} <b>VS</b> {p_b_label}\n\n{winner_text}\n\n<b>Счет:</b>\n• {p_a_label}: {} бросков (лучший: {})\n• {p_b_label}: {} бросков (лучший: {})\n\n<b>Время:</b> {:.1} с",
             p_a.rolls_count,
             p_a.best_rarity_name,
             p_b.rolls_count,
