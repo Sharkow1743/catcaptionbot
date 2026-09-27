@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use teloxide::prelude::*;
-use teloxide::types::{ChatId, ParseMode};
+use teloxide::types::{ChatId, InlineKeyboardMarkup, ParseMode};
 
 use super::types::{
     BattleMode, BattleOutcome, BattleSession, BattleStatus, MatchmakingTicket, PlayerBattleState,
@@ -80,6 +80,7 @@ pub async fn queue_random_match(
             created_at_ms: now,
             player_a: PlayerBattleState::new(ticket.user_id, ticket.chat_id, ticket.username),
             player_b: Some(PlayerBattleState::new(user_id, chat_id, username)),
+            inline_message_id: None,
         };
 
         session_mgr
@@ -129,6 +130,7 @@ pub async fn create_invite_duel(
         created_at_ms: now,
         player_a: PlayerBattleState::new(user_id, chat_id, username),
         player_b: None,
+        inline_message_id: None,
     };
 
     session_mgr
@@ -149,6 +151,27 @@ pub async fn join_invite_duel(
     chat_id: i64,
     username: Option<String>,
     battle_id: ShortId,
+) -> anyhow::Result<()> {
+    join_invite_duel_with_inline(
+        session_mgr,
+        bot,
+        user_id,
+        chat_id,
+        username,
+        battle_id,
+        None,
+    )
+    .await
+}
+
+pub async fn join_invite_duel_with_inline(
+    session_mgr: &SessionManager,
+    bot: &Bot,
+    user_id: u64,
+    chat_id: i64,
+    username: Option<String>,
+    battle_id: ShortId,
+    inline_message_id: Option<String>,
 ) -> anyhow::Result<()> {
     let mut battle = session_mgr
         .get_ephemeral::<BattleSession>(battle_id)
@@ -176,6 +199,9 @@ pub async fn join_invite_duel(
     battle.status = BattleStatus::Countdown {
         starts_at_epoch_ms: now + 2500,
     };
+    if inline_message_id.is_some() {
+        battle.inline_message_id = inline_message_id;
+    }
 
     session_mgr
         .set_ephemeral(battle_id, battle, [player_a_id, user_id])
@@ -357,6 +383,18 @@ pub fn start_battle_lifecycle(bot: Bot, session_mgr: SessionManager, battle_id: 
             .parse_mode(ParseMode::Html)
             .reply_markup(battle_active_keyboard())
             .await;
+
+        // Edit Telegram inline message if originated from inline query
+        if let Some(ref inline_msg_id) = battle.inline_message_id {
+            let inline_start = format!(
+                "⚔️ <b>ДУЭЛЬ НАЧАЛАСЬ</b>\n\n{p_a_label} <b>VS</b> {p_b_label}\n<b>Режим:</b> {mode_title}\n\n<i>Битва в процессе...</i>"
+            );
+            let _ = bot
+                .edit_message_text_inline(inline_msg_id.clone(), inline_start)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(InlineKeyboardMarkup::default())
+                .await;
+        }
 
         tokio::time::sleep(Duration::from_millis(2500)).await;
 
@@ -748,31 +786,7 @@ pub async fn finalize_battle(
         None => return Ok(()),
     };
 
-    // User statistic
-    match &outcome {
-        BattleOutcome::Winner {
-            winner_id,
-            loser_id,
-            ..
-        } => {
-            let _ = session_mgr
-                .mutate_session(*winner_id, |s| s.stats.battles_won += 1)
-                .await;
-            let _ = session_mgr
-                .mutate_session(*loser_id, |s| s.stats.battles_lost += 1)
-                .await;
-        }
-        BattleOutcome::Draw => {
-            let _ = session_mgr
-                .mutate_session(p_a.user_id, |s| s.stats.battles_draw += 1)
-                .await;
-            let _ = session_mgr
-                .mutate_session(p_b.user_id, |s| s.stats.battles_draw += 1)
-                .await;
-        }
-        BattleOutcome::Cancelled => {}
-    }
-
+    // Correctly apply user statistics ONCE
     match &outcome {
         BattleOutcome::Winner {
             winner_id,
@@ -823,6 +837,39 @@ pub async fn finalize_battle(
         .reply_markup(crate::controls::main_menu_keyboard())
         .await;
 
+    // Update Telegram inline message with results and remove button
+    if let Some(ref inline_msg_id) = battle.inline_message_id {
+        let p_a_label = p_a.display_name();
+        let p_b_label = p_b.display_name();
+
+        let winner_text = match &outcome {
+            BattleOutcome::Winner { winner_id, .. } => {
+                if *winner_id == p_a.user_id {
+                    format!("🏆 Победитель: <b>{p_a_label}</b>")
+                } else {
+                    format!("🏆 Победитель: <b>{p_b_label}</b>")
+                }
+            }
+            BattleOutcome::Draw => "🤝 <b>Ничья!</b>".to_string(),
+            BattleOutcome::Cancelled => "❌ <b>Дуэль отменена</b>".to_string(),
+        };
+
+        let inline_final = format!(
+            "⚔️ <b>ДУЭЛЬ ЗАВЕРШЕНА</b>\n\n{p_a_label} <b>VS</b> {p_b_label}\n\n{winner_text}\n\n<b>Счет:</b>\n• {p_a_label}: {} бросков (лучший: {})\n• {p_b_label}: {} бросков (лучший: {})\n\n<b>Время:</b> {:.1} с",
+            p_a.rolls_count,
+            p_a.best_rarity_name,
+            p_b.rolls_count,
+            p_b.best_rarity_name,
+            duration_secs
+        );
+
+        let _ = bot
+            .edit_message_text_inline(inline_msg_id.clone(), inline_final)
+            .parse_mode(ParseMode::Html)
+            .reply_markup(InlineKeyboardMarkup::default())
+            .await;
+    }
+
     Ok(())
 }
 
@@ -858,6 +905,7 @@ pub async fn create_invite_duel_with_id(
         created_at_ms: now,
         player_a: PlayerBattleState::new(user_id, chat_id, username),
         player_b: None,
+        inline_message_id: None,
     };
 
     session_mgr

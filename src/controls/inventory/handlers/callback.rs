@@ -63,22 +63,6 @@ pub async fn handle_inventory_callback(
             next_view,
         )
         .await?;
-    } else if data == "inv:tab:overview" {
-        let _ = bot.answer_callback_query(q.id).await;
-        let next_view = InventoryView {
-            tab: InventoryTab::Overview,
-            pending_release: None,
-            ..current_view
-        };
-        apply_inventory_view(
-            &bot,
-            chat_id,
-            &dialogue,
-            &mut session,
-            &app_state,
-            next_view,
-        )
-        .await?;
     } else if data == "inv:sel:equip" {
         let _ = bot.answer_callback_query(q.id).await;
         let next_view = InventoryView {

@@ -41,15 +41,18 @@ impl Modifier for Loyalty {
         let active_slot = session.inventory.get_ref("equip", 0);
         let is_unequipped = active_slot.is_none();
 
-        let (loyalty_level, equipped_tier, equipped_domain) = if let Some(slot) = active_slot {
-            (
-                slot.cat.loyalty_level(),
-                slot.cat.rarity().tier(),
-                Some(slot.cat.domain()),
-            )
-        } else {
-            (0.0, -0.50, None)
-        };
+        let (loyalty_level, equipped_tier, equipped_domain, reach_bonus, catch_bonus) =
+            if let Some(slot) = active_slot {
+                (
+                    slot.cat.loyalty_level(),
+                    slot.cat.rarity().tier(),
+                    Some(slot.cat.domain()),
+                    slot.cat.stats.reach_bonus,
+                    slot.cat.stats.catch_bonus,
+                )
+            } else {
+                (0.0, -0.50, None, 0.0, 0.0)
+            };
 
         let rarity_mgr = RarityManager::global();
         let equipped_domain_catch = equipped_domain.clone();
@@ -58,7 +61,9 @@ impl Modifier for Loyalty {
             for (id, weight) in weights.iter_mut() {
                 if let Some(rarity) = rarity_mgr.get_by_id(id) {
                     let (effective_cap, domain_mult) = if let Some(ref domain) = equipped_domain {
-                        domain.domain_eval(rarity.domain_id(), loyalty_level, equipped_tier)
+                        let (cap, mult) =
+                            domain.domain_eval(rarity.domain_id(), loyalty_level, equipped_tier);
+                        (cap + reach_bonus, mult)
                     } else {
                         (crate::content::loyalty::BASE_UNEQUIPPED_CAP, 1.0)
                     };
@@ -93,7 +98,8 @@ impl Modifier for Loyalty {
                 loyalty_level * 0.35
             };
 
-            ctx.probability = (ctx.probability + loyalty_mod + domain_mod).clamp(0.05, 0.98);
+            ctx.probability =
+                (ctx.probability + loyalty_mod + domain_mod + catch_bonus).clamp(0.05, 0.98);
 
             ctx
         })

@@ -53,7 +53,7 @@ pub async fn handle_start(
         }
     }
 
-    let welcome = "<b>Добро пожаловать!</b>\n\nНажмите кнопку \"Получить кота\" с говорящем названием, чтобы начать играть";
+    let welcome = "<b>Добро пожаловать!</b>\n\nНажмите кнопку \"Получить кота\" с говорящим названием, чтобы начать играть";
     bot.send_message(msg.chat.id, welcome)
         .parse_mode(teloxide::types::ParseMode::Html)
         .reply_markup(main_menu_keyboard())

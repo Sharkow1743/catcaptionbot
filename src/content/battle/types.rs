@@ -8,17 +8,17 @@ pub fn tier_to_score(tier: f32) -> f32 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BattleMode {
-    /// First player to find a cat with tier >= target_tier
     TargetRarity {
         target_tier: f32,
         target_rarity_name: String,
         timeout_secs: u64,
     },
-    /// Fast sprint: highest single rarity rolled within 15-30 seconds wins
-    TimeAttack { duration_secs: u64 },
-    /// Point accumulation: every rolled cat grants points based on its rarity tier
-    ScoreAttack { duration_secs: u64 },
-    /// Point threshold race: first player to reach target_score wins immediately
+    TimeAttack {
+        duration_secs: u64,
+    },
+    ScoreAttack {
+        duration_secs: u64,
+    },
     ThresholdRace {
         target_score: f32,
         timeout_secs: u64,
@@ -232,6 +232,7 @@ pub struct BattleSession {
     pub created_at_ms: i64,
     pub player_a: PlayerBattleState,
     pub player_b: Option<PlayerBattleState>,
+    pub inline_message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

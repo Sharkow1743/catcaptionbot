@@ -34,13 +34,6 @@ pub async fn handle_inline_query(bot: Bot, q: InlineQuery, app_state: AppState) 
         || query.contains("дуэль")
         || query.contains("бой")
     {
-        let bot_username = bot
-            .get_me()
-            .await
-            .ok()
-            .and_then(|me| me.user.username)
-            .unwrap_or_default();
-
         let duel_id = if let Some((existing_id, _)) =
             crate::content::battle::find_waiting_duel(&app_state.session_manager, user_id).await
         {
@@ -59,19 +52,14 @@ pub async fn handle_inline_query(bot: Bot, q: InlineQuery, app_state: AppState) 
         };
 
         let content = InputMessageContentText::new(format!(
-            "<b>Вызов на дуэль</b>\n\n<b>Организатор:</b> @{safe_username}"
+            "<b>Вызов на дуэль!</b>\n\n<b>Организатор:</b> @{safe_username}"
         ))
         .parse_mode(ParseMode::Html);
 
-        let invite_url_str = format!("https://t.me/{}?start=battle_{}", bot_username, duel_id);
-        let button = if let Ok(url) = reqwest::Url::parse(&invite_url_str) {
-            InlineKeyboardButton::url("Принять вызов", url)
-        } else {
-            InlineKeyboardButton::callback(
-                "Принять вызов",
-                format!("inline_duel:{duel_id}:{user_id}"),
-            )
-        };
+        let button = InlineKeyboardButton::callback(
+            "Принять вызов",
+            format!("inline_duel:{duel_id}:{user_id}"),
+        );
 
         let kb = InlineKeyboardMarkup::new([[button]]);
 
@@ -171,6 +159,8 @@ pub async fn handle_inline_duel_callback(
 
         let _ = bot.answer_callback_query(q.id).text("Дуэль принята!").await;
 
+        let inline_message_id = q.inline_message_id.clone();
+
         if app_state
             .session_manager
             .get_ephemeral::<crate::content::battle::BattleSession>(battle_id)
@@ -187,13 +177,31 @@ pub async fn handle_inline_duel_callback(
             .await;
         }
 
-        let _ = crate::content::battle::join_invite_duel(
+        // Edit the inline message instantly to reflect duel start and remove the join button
+        if let Some(ref inline_msg_id) = inline_message_id {
+            let challenger_label = challenger_username
+                .as_ref()
+                .map(|u| format!("@{u}"))
+                .unwrap_or_else(|| format!("Игрок {challenger_id}"));
+
+            let initial_edit =
+                format!("<b>Дуэль принята!</b>\n\nВызов принял: <b>{challenger_label}</b>");
+
+            let _ = bot
+                .edit_message_text_inline(inline_msg_id.clone(), initial_edit)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(InlineKeyboardMarkup::default())
+                .await;
+        }
+
+        let _ = crate::content::battle::join_invite_duel_with_inline(
             &app_state.session_manager,
             &bot,
             challenger_id,
             challenger_id as i64,
             challenger_username,
             battle_id,
+            inline_message_id,
         )
         .await;
     }
