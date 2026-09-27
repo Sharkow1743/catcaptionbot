@@ -9,7 +9,7 @@ impl Domain for NeutralDomain {
         "neutral"
     }
     fn name(&self) -> &'static str {
-        "Обыденность"
+        "Обыденные"
     }
     fn icon(&self) -> &'static str {
         "○"
@@ -25,7 +25,7 @@ impl Domain for CyberDomain {
         "cyber"
     }
     fn name(&self) -> &'static str {
-        "Кибернетика"
+        "Кибернетические"
     }
     fn icon(&self) -> &'static str {
         "◈"
@@ -72,7 +72,7 @@ impl Domain for HazardDomain {
         "hazard"
     }
     fn name(&self) -> &'static str {
-        "Аномалии"
+        "Аномальные"
     }
     fn icon(&self) -> &'static str {
         "⌬"
@@ -115,7 +115,7 @@ impl Domain for TitanDomain {
         "titan"
     }
     fn name(&self) -> &'static str {
-        "Титан"
+        "Монолитные"
     }
     fn icon(&self) -> &'static str {
         "▲"
@@ -161,7 +161,7 @@ impl Domain for CelestialDomain {
         "celestial"
     }
     fn name(&self) -> &'static str {
-        "Небожители"
+        "Небесные"
     }
     fn icon(&self) -> &'static str {
         "☼"
@@ -207,7 +207,7 @@ impl Domain for OccultDomain {
         "occult"
     }
     fn name(&self) -> &'static str {
-        "Оккультизм"
+        "Оккультные"
     }
     fn icon(&self) -> &'static str {
         "✦"
