@@ -3,13 +3,10 @@ use std::str::FromStr;
 use teloxide::prelude::*;
 use teloxide::types::{
     CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InlineQuery, InlineQueryResult,
-    InlineQueryResultArticle, InlineQueryResultCachedPhoto, InputMessageContent,
-    InputMessageContentText, ParseMode,
+    InlineQueryResultArticle, InputMessageContent, InputMessageContentText, ParseMode,
 };
 use teloxide::utils::html::escape;
 
-use crate::content::domain::DomainManager;
-use crate::content::rarity::RarityManager;
 use crate::controls::inventory::handle_inventory_callback;
 use crate::controls::take::handle_take_cat;
 use crate::session::UserSession;
@@ -37,16 +34,46 @@ pub async fn handle_inline_query(bot: Bot, q: InlineQuery, app_state: AppState) 
         || query.contains("дуэль")
         || query.contains("бой")
     {
-        let duel_id = ShortId::now_v7();
+        let bot_username = bot
+            .get_me()
+            .await
+            .ok()
+            .and_then(|me| me.user.username)
+            .unwrap_or_default();
+
+        let duel_id = if let Some((existing_id, _)) =
+            crate::content::battle::find_waiting_duel(&app_state.session_manager, user_id).await
+        {
+            existing_id
+        } else {
+            let battle_id = ShortId::now_v7();
+            let _ = crate::content::battle::create_invite_duel_with_id(
+                &app_state.session_manager,
+                user_id,
+                user_id as i64,
+                q.from.username.clone(),
+                battle_id,
+            )
+            .await;
+            battle_id
+        };
+
         let content = InputMessageContentText::new(format!(
-            "<b>Вызов на дуель</b>\n\n<b>Организатор:</b> @{safe_username}"
+            "<b>Вызов на дуэль</b>\n\n<b>Организатор:</b> @{safe_username}"
         ))
         .parse_mode(ParseMode::Html);
 
-        let kb = InlineKeyboardMarkup::new([[InlineKeyboardButton::callback(
-            "Принять вызов",
-            format!("inline_duel:{duel_id}:{user_id}"),
-        )]]);
+        let invite_url_str = format!("https://t.me/{}?start=battle_{}", bot_username, duel_id);
+        let button = if let Ok(url) = reqwest::Url::parse(&invite_url_str) {
+            InlineKeyboardButton::url("Принять вызов", url)
+        } else {
+            InlineKeyboardButton::callback(
+                "Принять вызов",
+                format!("inline_duel:{duel_id}:{user_id}"),
+            )
+        };
+
+        let kb = InlineKeyboardMarkup::new([[button]]);
 
         let article = InlineQueryResultArticle::new(
             format!("duel_{duel_id}"),
@@ -142,25 +169,29 @@ pub async fn handle_inline_duel_callback(
             return Ok(());
         }
 
-        let _ = bot
-            .answer_callback_query(q.id)
-            .text("Дуэль принята! Переходим к бою...")
-            .await;
+        let _ = bot.answer_callback_query(q.id).text("Дуэль принята!").await;
 
-        let _ = crate::content::battle::create_invite_duel_with_id(
-            &app_state.session_manager,
-            host_id,
-            0,
-            None,
-            battle_id,
-        )
-        .await;
+        if app_state
+            .session_manager
+            .get_ephemeral::<crate::content::battle::BattleSession>(battle_id)
+            .await
+            .is_none()
+        {
+            let _ = crate::content::battle::create_invite_duel_with_id(
+                &app_state.session_manager,
+                host_id,
+                host_id as i64,
+                None,
+                battle_id,
+            )
+            .await;
+        }
 
         let _ = crate::content::battle::join_invite_duel(
             &app_state.session_manager,
             &bot,
             challenger_id,
-            0,
+            challenger_id as i64,
             challenger_username,
             battle_id,
         )

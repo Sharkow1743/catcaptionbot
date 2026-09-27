@@ -844,6 +844,10 @@ pub async fn create_invite_duel_with_id(
     username: Option<String>,
     battle_id: ShortId,
 ) -> anyhow::Result<ShortId> {
+    if is_in_active_battle(session_mgr, user_id).await {
+        anyhow::bail!("Вы уже находитесь в активной дуэли!");
+    }
+
     cancel_waiting(session_mgr, user_id).await;
 
     let now = unix_timestamp();

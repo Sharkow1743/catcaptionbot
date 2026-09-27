@@ -20,7 +20,7 @@ pub async fn serve_cat_roll(
 ) -> HandlerResult {
     let Some(guard) = RollGuard::try_acquire(session.user_id) else {
         let _ = bot.delete_message(msg.chat.id, msg.id).await;
-        notice!("Rejected spam 'Get' from user {}", session.user_id);
+        log::debug!("Rejected spam 'Get' from user {}", session.user_id);
         return Ok(());
     };
 
