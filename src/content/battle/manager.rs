@@ -57,7 +57,7 @@ pub async fn queue_random_match(
         return Ok(QueueResult::AlreadyInBattle);
     }
 
-    cancel_waiting(session_mgr, user_id).await;
+    cancel_waiting(session_mgr, bot, user_id).await;
 
     let now = unix_timestamp();
     let all_tickets = session_mgr.all_ephemeral_typed::<MatchmakingTicket>().await;
@@ -119,7 +119,7 @@ pub async fn create_invite_duel(
         anyhow::bail!("Вы уже находитесь в активной дуэли!");
     }
 
-    cancel_waiting(session_mgr, user_id).await;
+    cancel_waiting(session_mgr, bot, user_id).await;
 
     let battle_id = ShortId::now_v7();
     let now = unix_timestamp();
@@ -190,7 +190,7 @@ pub async fn join_invite_duel_with_inline(
         anyhow::bail!("Вы уже участвуете в другой дуэли");
     }
 
-    cancel_waiting(session_mgr, user_id).await;
+    cancel_waiting(session_mgr, bot, user_id).await;
 
     let now = unix_timestamp();
     let player_a_id = battle.player_a.user_id;
@@ -211,7 +211,7 @@ pub async fn join_invite_duel_with_inline(
     Ok(())
 }
 
-pub async fn cancel_waiting(session_mgr: &SessionManager, user_id: u64) -> bool {
+pub async fn cancel_waiting(session_mgr: &SessionManager, bot: &Bot, user_id: u64) -> bool {
     let mut cancelled = false;
     let tickets = session_mgr
         .find_ephemeral_by_user_typed::<MatchmakingTicket>(user_id)
@@ -220,7 +220,19 @@ pub async fn cancel_waiting(session_mgr: &SessionManager, user_id: u64) -> bool 
         session_mgr.remove_ephemeral(tid).await;
         cancelled = true;
     }
-    if let Some((bid, _)) = find_waiting_duel(session_mgr, user_id).await {
+    if let Some((bid, battle)) = find_waiting_duel(session_mgr, user_id).await {
+        // If an inline invitation message is waiting in a chat, edit it and remove the button
+        if let Some(ref inline_msg_id) = battle.inline_message_id {
+            let host_label = battle.player_a.display_name();
+            let text = format!(
+                "<b>Вызов на дуэль отменен</b>\n\nОрганизатор {host_label} отменил поиск соперника"
+            );
+            let _ = bot
+                .edit_message_text_inline(inline_msg_id.clone(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(InlineKeyboardMarkup::default())
+                .await;
+        }
         session_mgr.remove_ephemeral(bid).await;
         cancelled = true;
     }
@@ -384,7 +396,6 @@ pub fn start_battle_lifecycle(bot: Bot, session_mgr: SessionManager, battle_id: 
             .reply_markup(battle_active_keyboard())
             .await;
 
-        // Edit Telegram inline message if originated from inline query
         if let Some(ref inline_msg_id) = battle.inline_message_id {
             let inline_start = format!(
                 "<b>ДУЭЛЬ НАЧАЛАСЬ</b>\n\n{p_a_label} <b>VS</b> {p_b_label}\n<b>Режим:</b> {mode_title}\n\n<i>Битва в процессе...</i>"
@@ -627,7 +638,7 @@ fn format_player_summary(
             let status = if won {
                 format!("Вы одержали победу над <b>{opp_label}</b>!")
             } else {
-                format!("Победитель дуэли: <b>{opp_label}</b>.")
+                format!("Победитель дуэли: <b>{opp_label}</b>")
             };
 
             let reason_desc = match reason {
@@ -696,21 +707,19 @@ fn format_player_summary(
                 }
                 WinReason::OpponentSurrendered => {
                     if won {
-                        format!("Соперник <b>{opp_label}</b> сдался.")
+                        format!("Соперник <b>{opp_label}</b> сдался")
                     } else {
-                        "Вы сдались.".to_string()
+                        "Вы сдались".to_string()
                     }
                 }
                 WinReason::OpponentTimedOut => {
                     if won {
-                        format!("Соперник <b>{opp_label}</b> не совершил ни одного броска.")
+                        format!("Соперник <b>{opp_label}</b> не совершил ни одного броска")
                     } else {
-                        "Время вышло: вы не сделали ни одного броска.".to_string()
+                        "Время вышло: вы не сделали ни одного броска".to_string()
                     }
                 }
-                WinReason::BothZeroRolls => {
-                    "Ни один из участников не совершил бросков.".to_string()
-                }
+                WinReason::BothZeroRolls => "Ни один из участников не совершил бросков".to_string(),
             };
 
             let highlight = if won {
@@ -726,14 +735,14 @@ fn format_player_summary(
         }
         BattleOutcome::Draw => (
             "<b>НИЧЬЯ</b>".to_string(),
-            format!("Поединок против <b>{opp_label}</b> завершился с равным счетом."),
-            "Ни один из игроков не получил преимущества.".to_string(),
+            format!("Поединок против <b>{opp_label}</b> завершился с равным счетом"),
+            "Ни один из игроков не получил преимущества".to_string(),
             String::new(),
         ),
         BattleOutcome::Cancelled => (
             "<b>ДУЭЛЬ ОТМЕНЕНА</b>".to_string(),
-            format!("Поединок против <b>{opp_label}</b> был прерван."),
-            "Матч завершен досрочно.".to_string(),
+            format!("Поединок против <b>{opp_label}</b> был прерван"),
+            "Матч завершен досрочно".to_string(),
             String::new(),
         ),
     };
@@ -786,7 +795,6 @@ pub async fn finalize_battle(
         None => return Ok(()),
     };
 
-    // Correctly apply user statistics ONCE
     match &outcome {
         BattleOutcome::Winner {
             winner_id,
@@ -837,7 +845,6 @@ pub async fn finalize_battle(
         .reply_markup(crate::controls::main_menu_keyboard())
         .await;
 
-    // Update Telegram inline message with results and remove button
     if let Some(ref inline_msg_id) = battle.inline_message_id {
         let p_a_label = p_a.display_name();
         let p_b_label = p_b.display_name();
@@ -851,7 +858,7 @@ pub async fn finalize_battle(
                 }
             }
             BattleOutcome::Draw => "<b>Ничья!</b>".to_string(),
-            BattleOutcome::Cancelled => "❌ <b>Дуэль отменена</b>".to_string(),
+            BattleOutcome::Cancelled => "<b>Дуэль отменена</b>".to_string(),
         };
 
         let inline_final = format!(
@@ -886,6 +893,7 @@ pub async fn is_in_queue_or_waiting(session_mgr: &SessionManager, user_id: u64) 
 
 pub async fn create_invite_duel_with_id(
     session_mgr: &SessionManager,
+    bot: &Bot,
     user_id: u64,
     chat_id: i64,
     username: Option<String>,
@@ -895,7 +903,7 @@ pub async fn create_invite_duel_with_id(
         anyhow::bail!("Вы уже находитесь в активной дуэли!");
     }
 
-    cancel_waiting(session_mgr, user_id).await;
+    cancel_waiting(session_mgr, bot, user_id).await;
 
     let now = unix_timestamp();
     let battle_session = BattleSession {

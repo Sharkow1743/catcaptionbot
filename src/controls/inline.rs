@@ -2,8 +2,9 @@ use std::str::FromStr;
 
 use teloxide::prelude::*;
 use teloxide::types::{
-    CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InlineQuery, InlineQueryResult,
-    InlineQueryResultArticle, InputMessageContent, InputMessageContentText, ParseMode,
+    CallbackQuery, ChosenInlineResult, InlineKeyboardButton, InlineKeyboardMarkup, InlineQuery,
+    InlineQueryResult, InlineQueryResultArticle, InputMessageContent, InputMessageContentText,
+    ParseMode,
 };
 use teloxide::utils::html::escape;
 
@@ -42,6 +43,7 @@ pub async fn handle_inline_query(bot: Bot, q: InlineQuery, app_state: AppState) 
             let battle_id = ShortId::now_v7();
             let _ = crate::content::battle::create_invite_duel_with_id(
                 &app_state.session_manager,
+                &bot,
                 user_id,
                 user_id as i64,
                 q.from.username.clone(),
@@ -128,6 +130,30 @@ pub async fn handle_inline_query(bot: Bot, q: InlineQuery, app_state: AppState) 
     Ok(())
 }
 
+pub async fn handle_chosen_inline_result(
+    _bot: Bot,
+    chosen: ChosenInlineResult,
+    app_state: AppState,
+) -> HandlerResult {
+    let Some(duel_id_str) = chosen.result_id.strip_prefix("duel_") else {
+        return Ok(());
+    };
+    let Ok(battle_id) = ShortId::from_str(duel_id_str) else {
+        return Ok(());
+    };
+
+    if let Some(inline_msg_id) = chosen.inline_message_id {
+        app_state
+            .session_manager
+            .mutate_ephemeral::<crate::content::battle::BattleSession, _>(battle_id, |b| {
+                b.inline_message_id = Some(inline_msg_id);
+            })
+            .await;
+    }
+
+    Ok(())
+}
+
 pub async fn handle_inline_duel_callback(
     bot: Bot,
     q: CallbackQuery,
@@ -142,69 +168,101 @@ pub async fn handle_inline_duel_callback(
     };
 
     let parts: Vec<&str> = duel_data.split(':').collect();
-    if parts.len() >= 2 {
-        let battle_id = ShortId::from_str(parts[0]).unwrap_or_else(|_| ShortId::now_v7());
-        let host_id: u64 = parts[1].parse().unwrap_or(0);
-        let challenger_id = q.from.id.0;
-        let challenger_username = q.from.username.clone();
+    if parts.len() < 2 {
+        return Ok(());
+    }
 
-        if challenger_id == host_id {
+    let battle_id = match ShortId::from_str(parts[0]) {
+        Ok(id) => id,
+        Err(_) => return Ok(()),
+    };
+    let host_id: u64 = parts[1].parse().unwrap_or(0);
+    let challenger_id = q.from.id.0;
+    let challenger_username = q.from.username.clone();
+
+    if challenger_id == host_id {
+        let _ = bot
+            .answer_callback_query(q.id)
+            .text("Вы не можете принять собственный вызов")
+            .show_alert(true)
+            .await;
+        return Ok(());
+    }
+
+    let inline_message_id = q.inline_message_id.clone();
+
+    // Verify duel is active and still waiting for opponent
+    let battle_opt = app_state
+        .session_manager
+        .get_ephemeral::<crate::content::battle::BattleSession>(battle_id)
+        .await;
+
+    match battle_opt {
+        Some(ref b) if b.status == crate::content::battle::BattleStatus::WaitingForOpponent => {}
+        _ => {
+            // Duel was cancelled by host or expired: remove button and show alert
             let _ = bot
                 .answer_callback_query(q.id)
-                .text("Вы не можете принять собственный вызов")
+                .text("Этот вызов на дуэль был отменен организатором или уже недействителен")
                 .show_alert(true)
                 .await;
+
+            if let Some(ref inline_msg_id) = inline_message_id {
+                let text = "❌<b>Вызов на дуэль недействителен</b>\n\nОрганизатор отменил поиск или дуэль уже завершена";
+                let _ = bot
+                    .edit_message_text_inline(inline_msg_id.clone(), text)
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(InlineKeyboardMarkup::default())
+                    .await;
+            }
             return Ok(());
         }
-
-        let _ = bot.answer_callback_query(q.id).text("Дуэль принята!").await;
-
-        let inline_message_id = q.inline_message_id.clone();
-
-        if app_state
-            .session_manager
-            .get_ephemeral::<crate::content::battle::BattleSession>(battle_id)
-            .await
-            .is_none()
-        {
-            let _ = crate::content::battle::create_invite_duel_with_id(
-                &app_state.session_manager,
-                host_id,
-                host_id as i64,
-                None,
-                battle_id,
-            )
-            .await;
-        }
-
-        // Edit the inline message instantly to reflect duel start and remove the join button
-        if let Some(ref inline_msg_id) = inline_message_id {
-            let challenger_label = challenger_username
-                .as_ref()
-                .map(|u| format!("@{u}"))
-                .unwrap_or_else(|| format!("Игрок {challenger_id}"));
-
-            let initial_edit =
-                format!("<b>Дуэль принята!</b>\n\nВызов принял: <b>{challenger_label}</b>");
-
-            let _ = bot
-                .edit_message_text_inline(inline_msg_id.clone(), initial_edit)
-                .parse_mode(ParseMode::Html)
-                .reply_markup(InlineKeyboardMarkup::default())
-                .await;
-        }
-
-        let _ = crate::content::battle::join_invite_duel_with_inline(
-            &app_state.session_manager,
-            &bot,
-            challenger_id,
-            challenger_id as i64,
-            challenger_username,
-            battle_id,
-            inline_message_id,
-        )
-        .await;
     }
+
+    let bot_username = bot
+        .get_me()
+        .await
+        .ok()
+        .and_then(|me| me.user.username)
+        .unwrap_or_default();
+
+    let redirect_url_str = format!("https://t.me/{}?start=battle_{}", bot_username, battle_id);
+
+    if let Ok(url) = reqwest::Url::parse(&redirect_url_str) {
+        let _ = bot.answer_callback_query(q.id.clone()).url(url).await;
+    } else {
+        let _ = bot
+            .answer_callback_query(q.id.clone())
+            .text("Дуэль принята!")
+            .await;
+    }
+
+    if let Some(ref inline_msg_id) = inline_message_id {
+        let challenger_label = challenger_username
+            .as_ref()
+            .map(|u| format!("@{u}"))
+            .unwrap_or_else(|| format!("Игрок {challenger_id}"));
+
+        let initial_edit =
+            format!("<b>Дуэль принята!</b>\n\nВызов принял: <b>{challenger_label}</b>");
+
+        let _ = bot
+            .edit_message_text_inline(inline_msg_id.clone(), initial_edit)
+            .parse_mode(ParseMode::Html)
+            .reply_markup(InlineKeyboardMarkup::default())
+            .await;
+    }
+
+    let _ = crate::content::battle::join_invite_duel_with_inline(
+        &app_state.session_manager,
+        &bot,
+        challenger_id,
+        challenger_id as i64,
+        challenger_username,
+        battle_id,
+        inline_message_id,
+    )
+    .await;
 
     Ok(())
 }

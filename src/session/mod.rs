@@ -450,7 +450,7 @@ impl SessionManager {
             Ok(None) => UserSession::new(user_id),
             Err(e) => {
                 log::warn!(
-                    "Failed to retrieve profile for user {user_id}: {e:?}. Resetting to default."
+                    "Failed to retrieve profile for user {user_id}: {e:?}. Resetting to default"
                 );
                 UserSession::new(user_id)
             }

@@ -102,6 +102,10 @@ async fn main() -> anyhow::Result<()> {
             Update::filter_inline_query().endpoint(crate::controls::inline::handle_inline_query),
         )
         .branch(
+            Update::filter_chosen_inline_result()
+                .endpoint(crate::controls::inline::handle_chosen_inline_result),
+        )
+        .branch(
             Update::filter_callback_query()
                 .filter(|q: CallbackQuery| {
                     q.data
@@ -152,7 +156,6 @@ async fn main() -> anyhow::Result<()> {
 
     dispatcher.dispatch().await;
 
-    // Flush dirty queued sessions only when running in release profile
     #[cfg(not(debug_assertions))]
     {
         log::info!("Shutting down");

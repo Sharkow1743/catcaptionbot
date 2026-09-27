@@ -7,7 +7,7 @@ use teloxide::types::{Message, Update};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, Display, EnumIter)]
 #[strum(ascii_case_insensitive)]
 pub enum KbCommand {
-    #[strum(serialize = "get", to_string = "Получить")]
+    #[strum(serialize = "get", to_string = "Получить кота")]
     Get,
     #[strum(serialize = "inventory", to_string = "Мои коты")]
     Inventory,

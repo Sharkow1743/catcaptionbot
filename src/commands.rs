@@ -29,6 +29,17 @@ pub async fn handle_start(
         if let Ok(battle_id) = ShortId::from_str(battle_id_str) {
             let user_id = msg.from.as_ref().map(|u| u.id.0).unwrap_or(0);
             let username = msg.from.as_ref().and_then(|u| u.username.clone());
+
+            // If player was already registered in this battle via callback query, seamlessly continue
+            if let Some((active_id, _)) =
+                crate::content::battle::find_active_battle(&app_state.session_manager, user_id)
+                    .await
+            {
+                if active_id == battle_id {
+                    return Ok(());
+                }
+            }
+
             match crate::content::battle::join_invite_duel(
                 &app_state.session_manager,
                 &bot,

@@ -102,7 +102,7 @@ pub async fn handle_keyboard_callback(
                 crate::content::battle::is_in_active_battle(&app_state.session_manager, user_id)
                     .await;
             if in_battle {
-                bot.send_message(msg.chat.id, "Вы уже участвуете в активной дуэли.")
+                bot.send_message(msg.chat.id, "Вы уже участвуете в активной дуэли")
                     .reply_markup(battle_active_keyboard())
                     .await?;
                 return Ok(());
@@ -147,7 +147,7 @@ pub async fn handle_keyboard_callback(
                 }
                 crate::content::battle::QueueResult::Matched => {}
                 crate::content::battle::QueueResult::AlreadyInBattle => {
-                    bot.send_message(msg.chat.id, "Вы уже участвуете в активной дуэли.")
+                    bot.send_message(msg.chat.id, "Вы уже участвуете в активной дуэли")
                         .reply_markup(battle_active_keyboard())
                         .await?;
                 }
@@ -181,12 +181,14 @@ pub async fn handle_keyboard_callback(
             }
         }
         KbCommand::CancelQueue => {
-            if crate::content::battle::cancel_waiting(&app_state.session_manager, user_id).await {
-                bot.send_message(msg.chat.id, "Поиск дуэли отменен.")
+            if crate::content::battle::cancel_waiting(&app_state.session_manager, &bot, user_id)
+                .await
+            {
+                bot.send_message(msg.chat.id, "Поиск дуэли отменён")
                     .reply_markup(main_menu_keyboard())
                     .await?;
             } else {
-                bot.send_message(msg.chat.id, "У вас нет активного поиска дуэли.")
+                bot.send_message(msg.chat.id, "У вас нет активного поиска дуэли")
                     .reply_markup(main_menu_keyboard())
                     .await?;
             }
@@ -195,9 +197,9 @@ pub async fn handle_keyboard_callback(
             if crate::content::battle::surrender_battle(&app_state.session_manager, &bot, user_id)
                 .await?
             {
-                // Resolution card sent inside finalize_battle
+                // Handled in finalize_battle
             } else {
-                bot.send_message(msg.chat.id, "Вы не находитесь в активной дуэли.")
+                bot.send_message(msg.chat.id, "Вы не находитесь в активной дуэли")
                     .reply_markup(main_menu_keyboard())
                     .await?;
             }
@@ -212,16 +214,9 @@ pub async fn handle_keyboard_callback(
                 main_menu_keyboard()
             };
 
-            bot.send_message(
-                msg.chat.id,
-                if in_battle {
-                    "Главное меню"
-                } else {
-                    "Главное меню"
-                },
-            )
-            .reply_markup(kb)
-            .await?;
+            bot.send_message(msg.chat.id, "Главное меню")
+                .reply_markup(kb)
+                .await?;
         }
     }
     Ok(())
