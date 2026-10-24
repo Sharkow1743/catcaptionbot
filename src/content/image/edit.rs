@@ -82,22 +82,63 @@ fn load_extra_typeface(data: &[u8]) -> Option<Arc<Typeface>> {
     Typeface::from_data(data.to_vec()).map(Arc::new)
 }
 
+fn load_fallback_fonts(chain: &mut FontFallback) {
+    let candidate_paths = [
+        // --- Noto Sans Symbols 1 & 2 ---
+        "assets/fonts/NotoSansSymbols-Bold.ttf",
+        "assets/fonts/NotoSansSymbols2-Regular.ttf",
+        // Linux / Docker standard font locations
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        // Windows font locations
+        "C:\\Windows\\Fonts\\seguisym.ttf",
+        "C:\\Windows\\Fonts\\segoeui.ttf",
+        "C:\\Windows\\Fonts\\arial.ttf",
+        // macOS font locations
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/Library/Fonts/Arial.ttf",
+    ];
+
+    for path in candidate_paths {
+        if let Ok(data) = std::fs::read(path) {
+            if let Some(tf) = Typeface::from_data(data) {
+                chain.add_fallback(Arc::new(tf));
+            }
+        }
+    }
+}
+
 static FONT_FALLBACK_CHAIN: OnceLock<FontFallback> = OnceLock::new();
 
 fn font_fallback_chain() -> &'static FontFallback {
     FONT_FALLBACK_CHAIN.get_or_init(|| {
         let mut chain = FontFallback::new();
+        // Priority 1: bundled fonts
         for loader in [main_typeface, badge_typeface] {
             if let Ok(tf) = loader() {
                 chain.add_fallback(tf);
             }
         }
+        // Priority 2: system fonts
+        load_fallback_fonts(&mut chain);
         chain
     })
 }
 
+/// Strips Unicode variation selectors (e.g. VS16 / U+FE0F which requests color emoji glyphs)
+/// so characters match against standard monochrome font cmap tables.
+pub fn sanitize_for_monochrome(s: &str) -> String {
+    s.chars()
+        .filter(|&c| !matches!(c, '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}'))
+        .collect()
+}
+
 fn is_invisible_joiner(c: char) -> bool {
-    matches!(c, '\u{200B}' | '\u{200D}' | '\u{FE0E}' | '\u{FE0F}')
+    matches!(c, '\u{200B}' | '\u{200D}')
 }
 
 fn resolve_typeface_for_char(
@@ -161,13 +202,6 @@ fn build_runs(spans: &[CharSpan]) -> Vec<GlyphRun> {
         }
     }
     runs
-}
-
-fn run_has_color_glyphs(text: &str, font: &Font) -> bool {
-    text.chars().any(|c| {
-        let g = font.char_to_glyph(c);
-        g != 0 && font.glyph_is_color(g)
-    })
 }
 
 fn shape_line_relative(
@@ -408,7 +442,8 @@ pub fn process_image(
 
     // 3. Render caption onto a separate transparent surface
     let impact_tf = main_typeface()?;
-    let upper_text = text.to_uppercase();
+    let sanitized_text = sanitize_for_monochrome(&text);
+    let upper_text = sanitized_text.to_uppercase();
 
     let mut caption_surface = Surface::new_raster_n32_premul(w, h)
         .ok_or_else(|| anyhow::anyhow!("Cannot create caption surface"))?;
@@ -471,13 +506,14 @@ pub fn bake_rarity_bar(
         format!(" {}", modifiers.trim())
     };
 
-    let label = format!(
+    let raw_label = format!(
         "{} {} {:.2}%{}",
         rarity.domain_icon(),
         rarity.name(),
         percentage,
         mod_suffix
     );
+    let label = sanitize_for_monochrome(&raw_label);
 
     let font_size = RARITY_FONT_SIZE * scale;
     let pad_x = RARITY_PAD_X * scale;
@@ -513,11 +549,6 @@ pub fn bake_rarity_bar(
     text_paint.set_anti_alias(true);
     text_paint.set_style(Style::Fill);
 
-    let mut color_glyph_paint = Paint::new();
-    color_glyph_paint.set_color(Color::WHITE.into());
-    color_glyph_paint.set_anti_alias(true);
-    color_glyph_paint.set_style(Style::Fill);
-
     let text_x = badge_x + pad_x;
     let text_y = badge_y + (RARITY_TEXT_Y_OFFSET * scale);
 
@@ -531,13 +562,10 @@ pub fn bake_rarity_bar(
         })
         .collect();
 
+    // Monochrome text rendering using the rarity color
     for run in build_runs(&abs_spans) {
         let run_font = Font::new(run.typeface.clone(), effective_size);
-        if run_has_color_glyphs(&run.text, &run_font) {
-            canvas.draw_string(&run.text, run.x, text_y, &run_font, &color_glyph_paint);
-        } else {
-            canvas.draw_string(&run.text, run.x, text_y, &run_font, &text_paint);
-        }
+        canvas.draw_string(&run.text, run.x, text_y, &run_font, &text_paint);
     }
 
     Ok(BadgeLayout {
@@ -617,21 +645,13 @@ pub fn bake_caption(
     stroke.set_style(Style::Stroke);
     stroke.set_stroke_width(stroke_width);
 
-    let mut color_glyph_paint = Paint::new();
-    color_glyph_paint.set_color(Color::WHITE.into());
-    color_glyph_paint.set_anti_alias(true);
-    color_glyph_paint.set_style(Style::Fill);
-
+    // Monochrome text rendering with outline stroke and fill
     for (i, line) in shaped.iter().enumerate() {
         let y = y_positions[i];
         for run in build_runs(&line.spans) {
             let run_font = Font::new(run.typeface.clone(), font_size);
-            if run_has_color_glyphs(&run.text, &run_font) {
-                canvas.draw_string(&run.text, run.x, y, &run_font, &color_glyph_paint);
-            } else {
-                canvas.draw_string(&run.text, run.x, y, &run_font, &stroke);
-                canvas.draw_string(&run.text, run.x, y, &run_font, &fill);
-            }
+            canvas.draw_string(&run.text, run.x, y, &run_font, &stroke);
+            canvas.draw_string(&run.text, run.x, y, &run_font, &fill);
         }
     }
 
@@ -711,51 +731,55 @@ fn word_wrap(
     max_width: f32,
 ) -> Vec<String> {
     let mut lines = Vec::new();
-    let mut current = String::with_capacity(text.len());
     let space_width = measure_fallback(" ", font_size, primary, fallback);
 
-    for word in text.split_whitespace() {
-        let word_width = measure_fallback(word, font_size, primary, fallback);
+    for paragraph in text.lines() {
+        let mut current = String::with_capacity(paragraph.len());
 
-        if word_width > max_width {
-            if !current.is_empty() {
-                lines.push(current);
-                current = String::with_capacity(text.len());
-            }
-            for ch in word.chars() {
-                let mut test = current.clone();
-                test.push(ch);
-                if measure_fallback(&test, font_size, primary, fallback) <= max_width {
-                    current.push(ch);
-                } else {
-                    if !current.is_empty() {
-                        lines.push(current);
-                        current = String::with_capacity(text.len());
-                    }
-                    current.push(ch);
+        for word in paragraph.split_whitespace() {
+            let word_width = measure_fallback(word, font_size, primary, fallback);
+
+            if word_width > max_width {
+                if !current.is_empty() {
+                    lines.push(current);
+                    current = String::with_capacity(paragraph.len());
                 }
+                for ch in word.chars() {
+                    let mut test = current.clone();
+                    test.push(ch);
+                    if measure_fallback(&test, font_size, primary, fallback) <= max_width {
+                        current.push(ch);
+                    } else {
+                        if !current.is_empty() {
+                            lines.push(current);
+                            current = String::with_capacity(paragraph.len());
+                        }
+                        current.push(ch);
+                    }
+                }
+                continue;
             }
-            continue;
-        }
 
-        if current.is_empty() {
-            current.push_str(word);
-        } else {
-            let current_width = measure_fallback(&current, font_size, primary, fallback);
-            if current_width + space_width + word_width <= max_width {
-                current.push(' ');
+            if current.is_empty() {
                 current.push_str(word);
             } else {
-                lines.push(current);
-                current = String::with_capacity(text.len());
-                current.push_str(word);
+                let current_width = measure_fallback(&current, font_size, primary, fallback);
+                if current_width + space_width + word_width <= max_width {
+                    current.push(' ');
+                    current.push_str(word);
+                } else {
+                    lines.push(current);
+                    current = String::with_capacity(paragraph.len());
+                    current.push_str(word);
+                }
             }
+        }
+
+        if !current.is_empty() {
+            lines.push(current);
         }
     }
 
-    if !current.is_empty() {
-        lines.push(current);
-    }
     if lines.is_empty() {
         lines.push(String::new());
     }
