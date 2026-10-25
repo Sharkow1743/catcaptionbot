@@ -4,9 +4,11 @@ pub mod kb_command;
 pub mod roll;
 pub mod stats;
 pub mod take;
+pub mod ui_kit;
 
 pub use inline::handle_inline_callback;
 pub use kb_command::KbCommand;
+pub use ui_kit::*;
 
 use inventory::{InventoryView, display_inventory};
 use roll::serve_cat_roll;
@@ -19,7 +21,7 @@ use teloxide::types::{KeyboardMarkup, Message};
 use crate::content::Content;
 use crate::queue::KeyedBufferedQueue;
 use crate::reply_kb;
-use crate::session::UserSession;
+use crate::session::{SessionManager, UserSession};
 use crate::state::{AppState, DialogueState, HandlerResult, State};
 
 pub fn main_menu_keyboard() -> KeyboardMarkup {
@@ -75,6 +77,25 @@ pub fn inventory_menu_keyboard() -> KeyboardMarkup {
     )
     .persistent()
     .input_field_placeholder(" ")
+}
+
+pub async fn user_active_keyboard(session_mgr: &SessionManager, user_id: u64) -> KeyboardMarkup {
+    if crate::content::battle::is_in_active_battle(session_mgr, user_id).await {
+        battle_active_keyboard()
+    } else {
+        main_menu_keyboard()
+    }
+}
+
+pub async fn resolve_user_menu_keyboard(
+    session_mgr: &SessionManager,
+    user_id: u64,
+) -> (KeyboardMarkup, &'static str) {
+    if crate::content::battle::is_in_active_battle(session_mgr, user_id).await {
+        (battle_active_keyboard(), "Возврат к дуэли")
+    } else {
+        (main_menu_keyboard(), "Главное меню")
+    }
 }
 
 pub async fn handle_keyboard_callback(
@@ -205,18 +226,8 @@ pub async fn handle_keyboard_callback(
             }
         }
         KbCommand::Back => {
-            let in_battle =
-                crate::content::battle::is_in_active_battle(&app_state.session_manager, user_id)
-                    .await;
-            let kb = if in_battle {
-                battle_active_keyboard()
-            } else {
-                main_menu_keyboard()
-            };
-
-            bot.send_message(msg.chat.id, "Главное меню")
-                .reply_markup(kb)
-                .await?;
+            let (kb, text) = resolve_user_menu_keyboard(&app_state.session_manager, user_id).await;
+            bot.send_message(msg.chat.id, text).reply_markup(kb).await?;
         }
     }
     Ok(())
@@ -243,28 +254,9 @@ pub async fn handle_inventory_message(
                 let _ = bot.delete_message(msg.chat.id, view.ctrl_msg_id).await;
                 dialogue.update(State::Start).await?;
 
-                let in_battle = crate::content::battle::is_in_active_battle(
-                    &app_state.session_manager,
-                    session.user_id,
-                )
-                .await;
-                let kb = if in_battle {
-                    battle_active_keyboard()
-                } else {
-                    main_menu_keyboard()
-                };
-
-                let _ = bot
-                    .send_message(
-                        msg.chat.id,
-                        if in_battle {
-                            "Возврат к дуэли"
-                        } else {
-                            "Главное меню"
-                        },
-                    )
-                    .reply_markup(kb)
-                    .await;
+                let (kb, prompt) =
+                    resolve_user_menu_keyboard(&app_state.session_manager, session.user_id).await;
+                let _ = bot.send_message(msg.chat.id, prompt).reply_markup(kb).await;
 
                 serve_cat_roll(msg, bot, content_queue, session, app_state).await?;
                 return Ok(());
@@ -317,26 +309,9 @@ pub async fn handle_inventory_message(
     let _ = bot.delete_message(msg.chat.id, view.ctrl_msg_id).await;
     let _ = bot.delete_message(msg.chat.id, msg.id).await;
 
-    let in_battle =
-        crate::content::battle::is_in_active_battle(&app_state.session_manager, session.user_id)
-            .await;
-    let kb = if in_battle {
-        battle_active_keyboard()
-    } else {
-        main_menu_keyboard()
-    };
-
-    let _ = bot
-        .send_message(
-            msg.chat.id,
-            if in_battle {
-                "Возврат к дуэли"
-            } else {
-                "Главное меню"
-            },
-        )
-        .reply_markup(kb)
-        .await;
+    let (kb, prompt) =
+        resolve_user_menu_keyboard(&app_state.session_manager, session.user_id).await;
+    let _ = bot.send_message(msg.chat.id, prompt).reply_markup(kb).await;
     dialogue.update(State::Start).await?;
     Ok(())
 }

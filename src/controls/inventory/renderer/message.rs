@@ -1,33 +1,13 @@
 use teloxide::types::{
-    InputRichBlock, InputRichBlockButtons, InputRichBlockDetails, InputRichBlockDivider,
-    InputRichBlockParagraph, InputRichBlockSectionHeading, InputRichBlockTable, InputRichMessage,
-    MessageId, RichBlockTableCell, RichMessageButton, RichText, RichTextBold, RichTextItalic,
+    InputRichBlock, InputRichBlockDivider, InputRichMessage, RichMessageButton, RichText,
 };
 
 use crate::content::domain::DomainManager;
 use crate::controls::inventory::types::{InventorySlot, InventoryTab};
+use crate::controls::ui_kit::*;
 use crate::session::UserSession;
 
 const GRID_COLUMNS: usize = 2;
-
-fn bold(text: impl Into<RichText>) -> RichText {
-    RichTextBold::new(text).into()
-}
-
-fn text(val: impl Into<String>) -> RichText {
-    RichText::from(val.into())
-}
-
-fn table_cell(text: impl Into<RichText>, is_header: bool, align: &str) -> RichBlockTableCell {
-    RichBlockTableCell {
-        text: Some(text.into()),
-        is_header: Some(is_header),
-        colspan: Some(1),
-        rowspan: Some(1),
-        align: align.to_string(),
-        valign: "middle".to_string(),
-    }
-}
 
 pub fn build_rich_inventory_message(
     session: &UserSession,
@@ -44,157 +24,93 @@ pub fn build_rich_inventory_message(
             let domain = slot.cat.domain();
             let cost = slot.cat.reroll_shard_cost();
 
-            blocks.push(InputRichBlock::Heading(InputRichBlockSectionHeading {
-                text: RichText::from("Характеристики"),
-                size: 2,
-            }));
-
-            blocks.push(InputRichBlock::Paragraph(InputRichBlockParagraph {
-                text: bold(slot.cat.image_text()),
-            }));
+            blocks.push(heading("Характеристики", 2));
+            blocks.push(paragraph(bold(slot.cat.image_text())));
 
             // 1. Core 2x2 Stats Grid
-            let stats_table = InputRichBlock::Table(InputRichBlockTable {
-                cells: vec![
-                    vec![
-                        table_cell(text("Резонанс"), false, "left"),
-                        table_cell(
-                            bold(format!("{:+.2}", slot.cat.stats.reach_bonus)),
-                            false,
-                            "right",
-                        ),
-                        table_cell(text("Выносливость"), false, "left"),
-                        table_cell(
-                            bold(format!("{:.0}%", slot.cat.stats.stamina_mult * 100.0)),
-                            false,
-                            "right",
-                        ),
-                    ],
-                    vec![
-                        table_cell(text("Хватка"), false, "left"),
-                        table_cell(
-                            bold(format!("{:+.0}%", slot.cat.stats.catch_bonus * 100.0)),
-                            false,
-                            "right",
-                        ),
-                        table_cell(text("Хладнокровие"), false, "left"),
-                        table_cell(
-                            bold(format!("{:.0}%", slot.cat.stats.panic_resistance * 100.0)),
-                            false,
-                            "right",
-                        ),
-                    ],
-                ],
-                is_bordered: Some(false),
-                is_striped: Some(true),
-                is_compact: Some(true),
-                caption: None,
-            });
+            let stats_table = RichTableBuilder::new()
+                .row(vec![
+                    cell_left("Резонанс"),
+                    cell_right(bold(format!("{:+.2}", slot.cat.stats.reach_bonus))),
+                    cell_left("Выносливость"),
+                    cell_right(bold(format!("{:.0}%", slot.cat.stats.stamina_mult * 100.0))),
+                ])
+                .row(vec![
+                    cell_left("Хватка"),
+                    cell_right(bold(format!("{:+.0}%", slot.cat.stats.catch_bonus * 100.0))),
+                    cell_left("Хладнокровие"),
+                    cell_right(bold(format!(
+                        "{:.0}%",
+                        slot.cat.stats.panic_resistance * 100.0
+                    ))),
+                ])
+                .build_block();
             blocks.push(stats_table);
 
             // 2. Collapsible Stat Descriptions Guide
-            let help_table = InputRichBlock::Table(InputRichBlockTable {
-                cells: vec![
-                    vec![
-                        table_cell(bold("Резонанс"), false, "left"),
-                        table_cell(text("Повышает максимальный ранг котов"), false, "left"),
-                    ],
-                    vec![
-                        table_cell(bold("Выносливость"), false, "left"),
-                        table_cell(
-                            text("Снижает утомляемость при поиске и ускоряет отдых"),
-                            false,
-                            "left",
-                        ),
-                    ],
-                    vec![
-                        table_cell(bold("Хватка"), false, "left"),
-                        table_cell(
-                            text("Повышает шанс забрать кота и снижает вероятность побега"),
-                            false,
-                            "left",
-                        ),
-                    ],
-                    vec![
-                        table_cell(bold("Хладнокровие"), false, "left"),
-                        table_cell(
-                            text("Снижает задержки и защищает от штрафов при частом поиске"),
-                            false,
-                            "left",
-                        ),
-                    ],
-                ],
-                is_bordered: Some(false),
-                is_striped: Some(true),
-                is_compact: Some(true),
-                caption: None,
-            });
+            let help_table = RichTableBuilder::new()
+                .row(vec![
+                    cell_left(bold("Резонанс")),
+                    cell_left("Повышает максимальный ранг котов"),
+                ])
+                .row(vec![
+                    cell_left(bold("Выносливость")),
+                    cell_left("Снижает утомляемость при поиске и ускоряет отдых"),
+                ])
+                .row(vec![
+                    cell_left(bold("Хватка")),
+                    cell_left("Повышает шанс забрать кота и снижает вероятность побега"),
+                ])
+                .row(vec![
+                    cell_left(bold("Хладнокровие")),
+                    cell_left("Снижает задержки и защищает от штрафов при частом поиске"),
+                ])
+                .build_block();
 
-            blocks.push(InputRichBlock::Details(InputRichBlockDetails {
-                summary: RichText::from("Справка по характеристикам"),
-                blocks: vec![help_table],
-                is_open: Some(false),
-            }));
+            blocks.push(details(
+                "Справка по характеристикам",
+                vec![help_table],
+                false,
+            ));
 
             // 3. Traits Section
             if !slot.cat.traits.is_empty() {
-                let mut trait_cells = Vec::new();
+                let mut trait_builder = RichTableBuilder::new().caption("Особенности");
                 for t in &slot.cat.traits {
-                    trait_cells.push(vec![
-                        table_cell(bold(text(&t.name)), false, "left"),
-                        table_cell(text(&t.desc), false, "left"),
+                    trait_builder = trait_builder.row(vec![
+                        cell_left(bold(t.name.clone())),
+                        cell_left(t.desc.clone()),
                     ]);
                 }
-
-                blocks.push(InputRichBlock::Table(InputRichBlockTable {
-                    cells: trait_cells,
-                    is_bordered: Some(false),
-                    is_striped: Some(true),
-                    is_compact: Some(true),
-                    caption: Some(RichText::from("Особенности")),
-                }));
+                blocks.push(trait_builder.build_block());
             }
 
             // 4. All-Domain Shard Wallet Table
             let domain_mgr = DomainManager::global();
-            let mut shard_cells: Vec<Vec<RichBlockTableCell>> = Vec::new();
-            let all_domains = domain_mgr.all();
-
-            for chunk in all_domains.chunks(2) {
+            let mut shard_builder = RichTableBuilder::new();
+            for chunk in domain_mgr.all().chunks(2) {
                 let mut row = Vec::new();
                 for dom in chunk {
                     let count = session.shards.get(dom.id()).copied().unwrap_or(0);
-                    row.push(table_cell(
-                        text(format!("{} {}", dom.icon(), dom.name())),
-                        false,
-                        "left",
-                    ));
-                    row.push(table_cell(bold(count.to_string()), false, "right"));
+                    row.push(cell_left(format!("{} {}", dom.icon(), dom.name())));
+                    row.push(cell_right(bold(count.to_string())));
                 }
-                shard_cells.push(row);
+                shard_builder = shard_builder.row(row);
             }
+            blocks.push(shard_builder.build_block());
 
-            let shards_table = InputRichBlock::Table(InputRichBlockTable {
-                cells: shard_cells,
-                is_bordered: Some(false),
-                is_striped: Some(true),
-                is_compact: Some(true),
-                caption: None,
-            });
-            blocks.push(shards_table);
-
-            blocks.push(InputRichBlock::Divider(InputRichBlockDivider {}));
+            blocks.push(divider());
 
             // Sub-menu Actions
-            blocks.push(InputRichBlock::Buttons(
-                InputRichBlockButtons::new(vec![
+            blocks.push(buttons(
+                vec![
                     RichMessageButton::callback(
                         RichText::from(format!("Перековать ({cost}{})", domain.icon())),
                         "inv:act:reroll",
                     ),
                     RichMessageButton::callback(RichText::from("‹ Назад"), "inv:tab:overview"),
-                ])
-                .align("center"),
+                ],
+                "center",
             ));
         }
 
@@ -202,48 +118,36 @@ pub fn build_rich_inventory_message(
     }
 
     // ── MAIN OVERVIEW VIEW ──
-    blocks.push(InputRichBlock::Heading(InputRichBlockSectionHeading {
-        text: RichText::from("Ваши коты"),
-        size: 2,
-    }));
+    blocks.push(heading("Ваши коты", 2));
 
     if let Some(equip_button) = build_equip_button(session, selected) {
-        blocks.push(InputRichBlock::Buttons(
-            InputRichBlockButtons::new(vec![equip_button]).align("center"),
-        ));
+        blocks.push(buttons(vec![equip_button], "center"));
     }
 
     let bag_buttons = build_bag_buttons(session, selected);
     if !bag_buttons.is_empty() {
-        blocks.push(InputRichBlock::Divider(InputRichBlockDivider {}));
+        blocks.push(divider());
         for chunk in bag_buttons.chunks(GRID_COLUMNS) {
-            blocks.push(InputRichBlock::Buttons(
-                InputRichBlockButtons::new(chunk.to_vec()).align("center"),
-            ));
+            blocks.push(buttons(chunk.to_vec(), "center"));
         }
     }
 
-    blocks.push(InputRichBlock::Divider(InputRichBlockDivider {}));
+    blocks.push(divider());
 
     if pending_release == Some(selected) {
-        blocks.push(InputRichBlock::Paragraph(InputRichBlockParagraph {
-            text: RichText::from(vec![
-                RichText::from("Точно отпустить этого кота?\nЭто действие "),
-                bold("необратимо"),
-            ]),
-        }));
+        blocks.push(paragraph(vec![
+            RichText::from("Точно отпустить этого кота?\nЭто действие "),
+            bold("необратимо"),
+        ]));
     } else {
         let (cat_type, idx) = selected.target();
         match session.inventory.get(cat_type, idx) {
             Some(slot) => {
                 let (_, bond_display) = slot.cat.loyalty_status();
-
-                blocks.push(InputRichBlock::Paragraph(InputRichBlockParagraph {
-                    text: RichText::from(vec![
-                        bold(slot.cat.desc()),
-                        RichText::from(format!("\n{bond_display}")),
-                    ]),
-                }));
+                blocks.push(paragraph(vec![
+                    bold(slot.cat.desc()),
+                    RichText::from(format!("\n{bond_display}")),
+                ]));
             }
             None => {
                 let empty_text = if cat_type == "equip" {
@@ -251,18 +155,14 @@ pub fn build_rich_inventory_message(
                 } else {
                     "Коробка пуста"
                 };
-                blocks.push(InputRichBlock::Paragraph(InputRichBlockParagraph {
-                    text: RichText::from(RichTextItalic::new(empty_text)),
-                }));
+                blocks.push(paragraph(italic(empty_text)));
             }
         }
     }
 
     if let Some(action_row) = build_action_row(selected, pending_release) {
         for chunk in action_row.chunks(2) {
-            blocks.push(InputRichBlock::Buttons(
-                InputRichBlockButtons::new(chunk.to_vec()).align("center"),
-            ));
+            blocks.push(buttons(chunk.to_vec(), "center"));
         }
     }
 

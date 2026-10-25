@@ -127,18 +127,18 @@ impl Modifier for Loyalty {
             let stamina_mult = equipped_slot.cat.stats.stamina_mult;
 
             match name {
-                "on_roll" => equipped_slot.cat.loyality.decay_roll(
+                "on_roll" => equipped_slot.cat.loyalty.decay_roll(
                     tier,
                     domain.roll_decay_multiplier(),
                     stamina_mult,
                 ),
                 "on_cat_catch" => {
                     let decay_mult = domain.take_decay_multiplier(target_dom, target_tier);
-                    equipped_slot.cat.loyality.decay_take(tier, decay_mult);
+                    equipped_slot.cat.loyalty.decay_take(tier, decay_mult);
                 }
                 "on_cat_release" => equipped_slot
                     .cat
-                    .loyality
+                    .loyalty
                     .boost_release(domain.release_boost_multiplier()),
                 _ => {}
             }

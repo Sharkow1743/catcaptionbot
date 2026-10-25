@@ -66,7 +66,7 @@ pub struct CatTrait {
 #[serde(default)]
 pub struct Cat {
     content: Content,
-    pub loyality: Loyality,
+    pub loyalty: Loyality,
     pub quote: String,
     pub desc: String,
     pub uuid: Uuid,
@@ -80,7 +80,7 @@ impl Default for Cat {
     fn default() -> Self {
         Self {
             content: Content::default(),
-            loyality: Loyality::default(),
+            loyalty: Loyality::default(),
             quote: String::new(),
             desc: String::new(),
             uuid: Uuid::new_v4(),
@@ -126,7 +126,7 @@ impl Cat {
 
         Self {
             content,
-            loyality: Loyality::new(),
+            loyalty: Loyality::new(),
             quote,
             desc,
             uuid: Uuid::new_v4(),
@@ -229,11 +229,11 @@ impl Cat {
     pub fn tick_loyalty(&mut self, is_equipped: bool, now: i64) {
         let tier = self.rarity().tier();
         let regen_mult = self.domain().passive_regen_multiplier();
-        self.loyality.update(is_equipped, tier, now, regen_mult);
+        self.loyalty.update(is_equipped, tier, now, regen_mult);
     }
 
     pub fn loyalty_level(&self) -> f32 {
-        self.loyality.level()
+        self.loyalty.level()
     }
 
     pub fn loyalty_status(&self) -> (&'static str, String) {
@@ -247,11 +247,7 @@ impl Cat {
             "Отдыхает"
         };
 
-        let norm = loyalty.clamp(0.0, 1.0);
-        let bar_len: usize = 6;
-        let filled = (norm * bar_len as f32).round() as usize;
-        let empty = bar_len.saturating_sub(filled);
-        let bar = format!("[{}{}]", "■".repeat(filled), "□".repeat(empty));
+        let bar = crate::utils::render_progress_bar(loyalty, 6);
 
         (label, format!("{label} {bar}"))
     }

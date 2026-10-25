@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use super::state::{DialogueState, HandlerResult};
 
-use crate::controls::main_menu_keyboard;
+use crate::controls::user_active_keyboard;
 use crate::utils::short_id::ShortId;
 use teloxide::{prelude::*, utils::command::BotCommands};
 
@@ -24,10 +24,10 @@ pub async fn handle_start(
 ) -> HandlerResult {
     dialogue.reset().await?;
     let start_arg = start.trim();
+    let user_id = msg.from.as_ref().map(|u| u.id.0).unwrap_or(0);
 
     if let Some(battle_id_str) = start_arg.strip_prefix("battle_") {
         if let Ok(battle_id) = ShortId::from_str(battle_id_str) {
-            let user_id = msg.from.as_ref().map(|u| u.id.0).unwrap_or(0);
             let username = msg.from.as_ref().and_then(|u| u.username.clone());
 
             // If player was already registered in this battle via callback query, seamlessly continue
@@ -52,11 +52,12 @@ pub async fn handle_start(
             {
                 Ok(_) => return Ok(()),
                 Err(e) => {
+                    let kb = user_active_keyboard(&app_state.session_manager, user_id).await;
                     bot.send_message(
                         msg.chat.id,
                         format!("Не удалось присоединиться к дуэли: {e}"),
                     )
-                    .reply_markup(main_menu_keyboard())
+                    .reply_markup(kb)
                     .await?;
                     return Ok(());
                 }
@@ -65,9 +66,10 @@ pub async fn handle_start(
     }
 
     let welcome = "<b>Добро пожаловать!</b>\n\nНажмите кнопку \"Получить кота\" с говорящим названием, чтобы начать играть";
+    let kb = user_active_keyboard(&app_state.session_manager, user_id).await;
     bot.send_message(msg.chat.id, welcome)
         .parse_mode(teloxide::types::ParseMode::Html)
-        .reply_markup(main_menu_keyboard())
+        .reply_markup(kb)
         .await?;
     Ok(())
 }

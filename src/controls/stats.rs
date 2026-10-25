@@ -1,38 +1,13 @@
 use std::collections::HashMap;
 
 use teloxide::prelude::*;
-use teloxide::types::{
-    InputRichBlock, InputRichBlockDetails, InputRichBlockDivider, InputRichBlockSectionHeading,
-    InputRichBlockTable, InputRichMessage, RichBlockTableCell, RichText, RichTextBold,
-    RichTextItalic,
-};
+use teloxide::types::{InputRichBlock, InputRichMessage};
 
-use crate::content::domain::DomainManager;
 use crate::content::rarity::RarityManager;
-use crate::controls::{battle_active_keyboard, main_menu_keyboard};
+use crate::controls::resolve_user_menu_keyboard;
+use crate::controls::ui_kit::*;
 use crate::session::UserSession;
 use crate::state::{AppState, HandlerResult};
-
-// MARK: - Helpers
-
-fn bold(text: impl Into<RichText>) -> RichText {
-    RichTextBold::new(text).into()
-}
-
-fn text(val: impl Into<String>) -> RichText {
-    RichText::from(val.into())
-}
-
-fn table_cell(text: impl Into<RichText>, is_header: bool, align: &str) -> RichBlockTableCell {
-    RichBlockTableCell {
-        text: Some(text.into()),
-        is_header: Some(is_header),
-        colspan: Some(1),
-        rowspan: Some(1),
-        align: align.to_string(),
-        valign: "middle".to_string(),
-    }
-}
 
 pub fn format_rarity_chance(pct: f32) -> String {
     if pct <= 0.0 || !pct.is_finite() {
@@ -42,7 +17,6 @@ pub fn format_rarity_chance(pct: f32) -> String {
     } else if pct >= 0.01 {
         format!("{:.2}%", pct)
     } else if pct >= 0.0005 {
-        // Numbers from 0.0005 up to 0.01 round to 3 decimal places
         format!("{:.3}%", pct)
     } else {
         "0.001%".to_string()
@@ -67,20 +41,13 @@ pub fn format_one_in_n(pct: f32) -> String {
     }
 }
 
-// MARK: - Main Message Builder
-
 pub fn build_rich_stats_message(session: &UserSession) -> InputRichMessage {
     let rarity_mgr = RarityManager::global();
-    let domain_mgr = DomainManager::global();
-
     let mut blocks: Vec<InputRichBlock> = Vec::new();
 
     // 1. Title
-    blocks.push(InputRichBlock::Heading(InputRichBlockSectionHeading {
-        text: RichText::from("Статистика"),
-        size: 1,
-    }));
-    blocks.push(InputRichBlock::Divider(InputRichBlockDivider {}));
+    blocks.push(heading("Статистика", 1));
+    blocks.push(divider());
 
     let best_rarity_display = if let Some(ref name) = session.stats.best_rarity_name {
         if let Some(r) = rarity_mgr
@@ -97,47 +64,17 @@ pub fn build_rich_stats_message(session: &UserSession) -> InputRichMessage {
     };
 
     // 2. Activity Table
-    blocks.push(InputRichBlock::Heading(InputRichBlockSectionHeading {
-        text: RichText::from("Коты"),
-        size: 2,
-    }));
-
-    let activity_table = InputRichBlock::Table(InputRichBlockTable {
-        cells: vec![
-            vec![
-                table_cell(text("Увидено"), false, "left"),
-                table_cell(text(session.stats.total_rolls.to_string()), false, "right"),
-            ],
-            vec![
-                table_cell(text("Поймано"), false, "left"),
-                table_cell(text(session.stats.total_caught.to_string()), false, "right"),
-            ],
-            vec![
-                table_cell(text("Сбежало"), false, "left"),
-                table_cell(
-                    text(session.stats.total_escaped.to_string()),
-                    false,
-                    "right",
-                ),
-            ],
-            vec![
-                table_cell(text("Отпущено"), false, "left"),
-                table_cell(
-                    text(session.stats.total_released.to_string()),
-                    false,
-                    "right",
-                ),
-            ],
-            vec![
-                table_cell(text("Рекордная редкость"), false, "left"),
-                table_cell(bold(best_rarity_display), false, "right"),
-            ],
-        ],
-        is_bordered: Some(false),
-        is_striped: Some(true),
-        is_compact: Some(true),
-        caption: None,
-    });
+    blocks.push(heading("Коты", 2));
+    let activity_table = RichTableBuilder::new()
+        .kv_row("Увидено", session.stats.total_rolls.to_string())
+        .kv_row("Поймано", session.stats.total_caught.to_string())
+        .kv_row("Сбежало", session.stats.total_escaped.to_string())
+        .kv_row("Отпущено", session.stats.total_released.to_string())
+        .row(vec![
+            cell_left("Рекордная редкость"),
+            cell_right(bold(best_rarity_display)),
+        ])
+        .build_block();
     blocks.push(activity_table);
 
     // 3. PvP Table
@@ -149,52 +86,26 @@ pub fn build_rich_stats_message(session: &UserSession) -> InputRichMessage {
         0.0
     };
 
-    blocks.push(InputRichBlock::Heading(InputRichBlockSectionHeading {
-        text: RichText::from("Дуэли"),
-        size: 2,
-    }));
-
-    let pvp_table = InputRichBlock::Table(InputRichBlockTable {
-        cells: vec![
-            vec![
-                table_cell(text("Победы"), false, "left"),
-                table_cell(text(session.stats.battles_won.to_string()), false, "right"),
-            ],
-            vec![
-                table_cell(text("Поражения"), false, "left"),
-                table_cell(text(session.stats.battles_lost.to_string()), false, "right"),
-            ],
-            vec![
-                table_cell(text("Ничьи"), false, "left"),
-                table_cell(text(session.stats.battles_draw.to_string()), false, "right"),
-            ],
-            vec![
-                table_cell(text("Всего"), false, "left"),
-                table_cell(text(total_duels.to_string()), false, "right"),
-            ],
-            vec![
-                table_cell(text("Частота побед"), false, "left"),
-                table_cell(
-                    text(format!(
-                        "{} {:.1}%",
-                        render_progress_bar(win_ratio, 8),
-                        win_ratio * 100.0
-                    )),
-                    false,
-                    "right",
-                ),
-            ],
-        ],
-        is_bordered: Some(false),
-        is_striped: Some(true),
-        is_compact: Some(true),
-        caption: None,
-    });
+    blocks.push(heading("Дуэли", 2));
+    let pvp_table = RichTableBuilder::new()
+        .kv_row("Победы", session.stats.battles_won.to_string())
+        .kv_row("Поражения", session.stats.battles_lost.to_string())
+        .kv_row("Ничьи", session.stats.battles_draw.to_string())
+        .kv_row("Всего", total_duels.to_string())
+        .row(vec![
+            cell_left("Частота побед"),
+            cell_right(format!(
+                "{} {:.1}%",
+                render_progress_bar(win_ratio, 8),
+                win_ratio * 100.0
+            )),
+        ])
+        .build_block();
     blocks.push(pvp_table);
 
-    blocks.push(InputRichBlock::Divider(InputRichBlockDivider {}));
+    blocks.push(divider());
 
-    // 5. Odds Table with Relative Multipliers & 1:N Column
+    // 4. Odds Table
     let total_base_weight = rarity_mgr.total_weight();
     let weights_map: HashMap<String, f32> = rarity_mgr
         .all()
@@ -218,12 +129,12 @@ pub fn build_rich_stats_message(session: &UserSession) -> InputRichMessage {
     let mut visible_rarities: Vec<_> = rarity_mgr.all().iter().filter(|r| !r.is_secret()).collect();
     visible_rarities.sort_by(|a, b| b.tier().partial_cmp(&a.tier()).unwrap());
 
-    let mut rarity_rows: Vec<Vec<RichBlockTableCell>> = vec![vec![
-        table_cell(bold("Редкость"), true, "left"),
-        table_cell(bold("Текущий"), true, "right"),
-        table_cell(bold("шанс"), true, "left"),
-        table_cell(bold("Множ."), true, "center"),
-    ]];
+    let mut odds_builder = RichTableBuilder::new().row(vec![
+        cell_header(bold("Редкость"), "left"),
+        cell_header(bold("Текущий"), "right"),
+        cell_header(bold("шанс"), "left"),
+        cell_header(bold("Множ."), "center"),
+    ]);
 
     for r in visible_rarities {
         let base_pct = if total_base_weight > 0.0 {
@@ -244,7 +155,6 @@ pub fn build_rich_stats_message(session: &UserSession) -> InputRichMessage {
             0.0
         };
 
-        // Relative multiplier calculation (e.g. +70% or -50%)
         let relative_ratio = if base_pct > 0.0 {
             curr_pct / base_pct
         } else {
@@ -262,27 +172,19 @@ pub fn build_rich_stats_message(session: &UserSession) -> InputRichMessage {
 
         let label = format!("{} {}", r.domain_icon(), r.name());
 
-        rarity_rows.push(vec![
-            table_cell(text(label), false, "left"),
-            table_cell(text(format_rarity_chance(curr_pct)), false, "center"),
-            table_cell(text(format_one_in_n(curr_pct)), false, "center"),
-            table_cell(text(delta_str), false, "right"),
+        odds_builder = odds_builder.row(vec![
+            cell_left(label),
+            cell_center(format_rarity_chance(curr_pct)),
+            cell_center(format_one_in_n(curr_pct)),
+            cell_right(delta_str),
         ]);
     }
 
-    let odds_table = InputRichBlock::Table(InputRichBlockTable {
-        cells: rarity_rows,
-        is_bordered: Some(false),
-        is_striped: Some(true),
-        is_compact: Some(true),
-        caption: None,
-    });
-
-    blocks.push(InputRichBlock::Details(InputRichBlockDetails {
-        summary: RichText::from("Таблица редкостей"),
-        blocks: vec![odds_table],
-        is_open: Some(false),
-    }));
+    blocks.push(details(
+        "Таблица редкостей",
+        vec![odds_builder.build_block()],
+        false,
+    ));
 
     InputRichMessage::blocks(blocks)
 }
@@ -295,25 +197,11 @@ pub async fn display_stats(
 ) -> HandlerResult {
     let user_id = session.user_id;
     let rich_message = build_rich_stats_message(&session);
-
-    let in_battle =
-        crate::content::battle::is_in_active_battle(&app_state.session_manager, user_id).await;
-    let kb = if in_battle {
-        battle_active_keyboard()
-    } else {
-        main_menu_keyboard()
-    };
+    let (kb, _) = resolve_user_menu_keyboard(&app_state.session_manager, user_id).await;
 
     bot.send_rich_message(msg.chat.id, rich_message)
         .reply_markup(kb)
         .await?;
 
     Ok(())
-}
-
-fn render_progress_bar(ratio: f32, length: usize) -> String {
-    let clamped = ratio.clamp(0.0, 1.0);
-    let filled = (clamped * length as f32).round() as usize;
-    let empty = length.saturating_sub(filled);
-    format!("[{}{}]", "■".repeat(filled), "□".repeat(empty))
 }

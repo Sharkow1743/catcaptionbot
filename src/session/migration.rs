@@ -56,7 +56,7 @@ fn migrate_v0_to_v1(profile: &mut UserProfile) {
     let clamp_loyalty = |lvl: f32| -> f32 { if lvl < 0.0 { 0.2 } else { lvl.clamp(0.0, 1.0) } };
 
     if let Some(slot) = profile.inventory.get_mut("equip", 0) {
-        slot.cat.loyality.level = clamp_loyalty(slot.cat.loyality.level);
+        slot.cat.loyalty.level = clamp_loyalty(slot.cat.loyalty.level);
         if slot.cat.stats == CatStats::default() {
             slot.cat.stats = CatStats::roll_random(slot.cat.rarity().tier());
         }
@@ -64,7 +64,7 @@ fn migrate_v0_to_v1(profile: &mut UserProfile) {
 
     if let Some(bag) = profile.inventory.category_mut("inventory") {
         for slot in bag.items_mut() {
-            slot.cat.loyality.level = clamp_loyalty(slot.cat.loyality.level);
+            slot.cat.loyalty.level = clamp_loyalty(slot.cat.loyalty.level);
             if slot.cat.stats == CatStats::default() {
                 slot.cat.stats = CatStats::roll_random(slot.cat.rarity().tier());
             }

@@ -97,3 +97,10 @@ pub fn float_to_progress(val: f32) -> char {
     let index = (val * scale.len() as f32).floor() as usize;
     scale[index.min(scale.len() - 1)]
 }
+
+pub fn render_progress_bar(ratio: f32, length: usize) -> String {
+    let clamped = ratio.clamp(0.0, 1.0);
+    let filled = (clamped * length as f32).round() as usize;
+    let empty = length.saturating_sub(filled);
+    format!("[{}{}]", "■".repeat(filled), "□".repeat(empty))
+}
