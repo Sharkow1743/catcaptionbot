@@ -1,3 +1,5 @@
+https://t.me/CatCaptionBot
+
 # TODO
 
 - rarities overhaul
